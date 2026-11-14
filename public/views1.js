@@ -6,17 +6,23 @@
   /* ---------- Accueil (allégé) ---------- */
   T.route(/^\/$/, async () => {
     const { items } = await T.get('/items?per=8');
-    const tile = (k, l, n) => `<a class="tile rv" href="/${k}" style="--d:${n * 0.08}s"><div class="tile-top"><span>Thrifty</span><span class="arrow">${T.ico('arrow', 20)}</span></div><h3>${l}</h3></a>`;
+    const chips = { femmes: ['Robes', 'Vestes', 'Sacs'], hommes: ['Chemises', 'Pulls', 'Baskets'], enfants: ['0-12 ans', 'Manteaux', 'Chaussures'] };
+    const tile = (k, l, n) => `<a class="tile rv" href="/${k}" style="--d:${n * 0.08}s"><div class="tile-top"><span>Thrifty</span><span class="arrow">${T.ico('arrow', 20)}</span></div><div><h3>${l}</h3><ul>${chips[k].map((c) => `<li>${c}</li>`).join('')}</ul></div></a>`;
+    const words = ['Femmes', 'Hommes', 'Enfants', 'Vestes', 'Robes', 'Chaussures', 'Sacs', 'Pulls', 'Seconde main', 'Premier choix'];
+    const mq = [0, 1].map(() => words.map((w) => `<span>${w}</span>`).join('')).join('');
     return `<section class="hero"><div class="wrap hero-in"><div>
         <div class="eyebrow"><span class="bar"></span>${esc(DJ.hello)}</div>
         <h1 class="display"><span class="line" style="--i:0"><span>Seconde main.</span></span><span class="line" style="--i:1"><span class="skew">Premier choix.</span></span></h1>
-        <form class="herosearch" data-form="search" role="search"><input name="q" type="search" placeholder="${esc(DJ.ask)}" aria-label="Rechercher"><button class="btn btn-ink" type="submit">Chercher</button></form>
-      </div><div class="hero-visual"><div class="bagwrap"><img src="/assets/bag.jpg" alt="Sac Thrifty" width="540" height="530"></div></div></div></section>
+        <form class="herosearch" data-form="search" role="search"><span class="hs-ico" aria-hidden="true">${T.ico('search', 18)}</span><input name="q" type="search" placeholder="${esc(DJ.ask)}" aria-label="Rechercher"><button class="btn btn-ink" type="submit">Chercher</button></form>
+      </div><div class="hero-visual"><div class="bagwrap"><img src="/assets/bag.jpg" alt="Sac Thrifty" width="540" height="530"></div>
+        <div class="chip c1" data-depth="26"><div class="chip-in">${T.ico('check', 18)}<span>Paiement à la livraison<small>Vous payez à la réception</small></span></div></div>
+        <div class="chip c2" data-depth="-18"><div class="chip-in" style="animation-delay:-2s">${T.ico('tag', 18)}<span>${esc(DJ.sell)} ?<small>Poster est gratuit</small></span></div></div></div></div></section>
+    <div class="marquee" aria-hidden="true"><div class="mq-row"><div class="mq-track">${mq}</div></div></div>
     <section class="wrap sp-s"><div class="univ">${tile('femmes', 'Femmes', 0)}${tile('hommes', 'Hommes', 1)}${tile('enfants', 'Enfants', 2)}</div></section>
-    <section class="wrap sp-s"><div class="sec-head"><div><div class="eyebrow"><span class="bar"></span>Nouveautés</div></div><a class="link" href="/catalogue">Tout voir</a></div>
+    <section class="wrap sp-s rv"><div class="sec-head"><div><div class="eyebrow"><span class="bar"></span>Nouveautés</div></div><a class="link" href="/catalogue">Tout voir</a></div>
       ${items.length ? T.grid(items) : T.emptyBox(DJ.empty, 'Soyez la première personne à mettre une belle pièce en ligne.', `<a class="btn btn-fill" href="/vendre">${esc(DJ.sell)}</a>`)}</section>
     <section class="banner"><div class="wrap banner-in"><div><div class="eyebrow" style="color:#fff"><span class="bar" style="background:#fff"></span>${esc(DJ.hi)}</div><h2>Un dressing qui dort ? ${esc(DJ.sell)}.</h2><p>Photographiez, fixez votre prix, on s'occupe du reste. Commission de ${Math.round(T.cfg.rate * 100)} % seulement quand vous vendez.</p>
-      <p style="margin-top:20px"><a class="btn btn-inverse" href="/vendre">Mettre en vente <span class="ar">→</span></a></p></div><div class="photo"><img src="/assets/couple.jpg" alt="" loading="lazy"></div></div></section>`;
+      <p style="margin-top:20px"><a class="btn btn-inverse mag" href="/vendre">Mettre en vente <span class="ar">→</span></a></p></div><div class="photo imgrev"><img src="/assets/couple.jpg" alt="" loading="lazy"></div></div></section>`;
   });
 
   /* ---------- Catalogue ---------- */
@@ -47,7 +53,7 @@
         history.replaceState(null, '', location.pathname + (p.toString() ? '?' + p : ''));
       };
       const load = async () => {
-        sync();
+        sync(); $('#list', root).classList.add('busy');
         const p = new URLSearchParams({ per: 24, page: st.page });
         if (st.univ) p.set('univ', st.univ); if (st.promo) p.set('promo', '1');
         ['q', 'max', 'city', 'sort'].forEach((k) => st[k] && p.set(k, st[k]));
@@ -58,6 +64,7 @@
           $('#list', root).innerHTML = r.items.length ? T.grid(r.items) : T.emptyBox(DJ.empty, 'Aucun article ne correspond. Essayez moins de filtres.', '<button class="btn btn-line" data-act="freset">Tout effacer</button>');
           $('#pager', root).innerHTML = r.pages > 1 ? `<button class="btn btn-line btn-sm" data-act="fpage" data-p="${r.page - 1}"${r.page <= 1 ? ' disabled' : ''}>Précédent</button><span class="muted small">Page ${r.page} / ${r.pages}</span><button class="btn btn-line btn-sm" data-act="fpage" data-p="${r.page + 1}"${r.page >= r.pages ? ' disabled' : ''}>Suivant</button>` : '';
         } catch (e) { $('#list', root).innerHTML = `<p class="alert bad">${esc(e.message)}</p>`; }
+        $('#list', root).classList.remove('busy'); T.reveal();
       };
       const reset = () => { st.page = 1; load(); };
       root.addEventListener('change', (e) => {

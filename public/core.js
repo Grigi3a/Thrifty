@@ -35,7 +35,7 @@
 
   /* ---- toast / modal ---- */
   let toastT;
-  T.toast = (m) => { $$('.toast').forEach((e) => e.remove()); const e = document.createElement('div'); e.className = 'toast'; e.setAttribute('role', 'status'); e.textContent = m; document.body.appendChild(e); clearTimeout(toastT); toastT = setTimeout(() => e.remove(), 3600); };
+  T.toast = (m) => { if (/Mabrouk/.test(m) && T.confetti) T.confetti(); $$('.toast').forEach((e) => e.remove()); const e = document.createElement('div'); e.className = 'toast'; e.setAttribute('role', 'status'); e.textContent = m; document.body.appendChild(e); clearTimeout(toastT); toastT = setTimeout(() => e.remove(), 3600); };
   T.modal = (html) => new Promise((res) => {
     const bg = document.createElement('div'); bg.className = 'modal-bg';
     bg.innerHTML = `<div class="modal" role="dialog" aria-modal="true">${html}</div>`;
@@ -79,7 +79,7 @@
     if (!hit) { view.innerHTML = notFound(); done(); return; }
     if ((hit.opt.auth || hit.opt.admin) && !T.user) { return T.go('/connexion?next=' + encodeURIComponent(path + location.search), true); }
     if (hit.opt.admin && T.user.role !== 'admin') { view.innerHTML = notFound(); done(); return; }
-    view.innerHTML = '<div class="wrap sp"><p class="muted" aria-live="polite">Chargement…</p></div>';
+    view.innerHTML = '<div class="wrap sp" aria-busy="true" aria-live="polite"><div class="sk sk-t"></div><div class="sk sk-s"></div><ul class="pgrid" style="margin-top:28px">' + '<li><div class="sk sk-card"></div></li>'.repeat(8) + '</ul></div>';
     document.title = 'Thrifty · Seconde main. Premier choix.';
     try {
       const out = await hit.fn(m.slice(1).map((x) => (x == null ? undefined : decodeURIComponent(x))), q);
@@ -94,11 +94,12 @@
     done();
     function done() { if (my !== seq) return; window.scrollTo(0, 0); T.chrome(true); reveal(); view.focus({ preventScroll: true }); }
   }
-  T.render = render;
+  T.render = render; T.reveal = () => reveal();
   function notFound(m) { return `<div class="wrap sp"><div class="empty"><h3>Page introuvable</h3><p class="muted">${esc(m || "Cette page n'existe pas ou n'est plus disponible.")}</p><a class="btn btn-fill" href="/">Retour à l'accueil</a></div></div>`; }
   T.title = (t) => { document.title = t + ' · Thrifty'; };
 
   function reveal() {
+    $$('.pgrid>li:not(.rv)').forEach((li, i) => { li.classList.add('rv'); li.style.setProperty('--d', ((i % 6) * 0.06) + 's'); });
     const els = $$('.rv:not(.in),.imgrev:not(.in)');
     if (!('IntersectionObserver' in window)) return els.forEach((e) => e.classList.add('in'));
     const io = new IntersectionObserver((es) => es.forEach((e) => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } }), { threshold: 0.12 });
