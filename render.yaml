@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: thrifty
+    runtime: docker
+    plan: starter
+    healthCheckPath: /healthz
+    disk:
+      name: thrifty-data
+      mountPath: /data
+      sizeGB: 5
+    envVars:
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: BASE_URL
+        sync: false
+      - key: SMTP_URL
+        sync: false
+      - key: COOKIE_SECURE
+        value: "1"

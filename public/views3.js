@@ -1,0 +1,96 @@
+/* Vues : administration, aide, compte, pages légales. */
+(function () {
+  'use strict';
+  const T = window.T, SH = T.SH, { esc, dh, $, $$ } = T, DJ = T.DJ;
+  const fld = (id, label, inner, hint) => `<div class="field"><label for="${id}">${label}</label>${inner}${hint ? `<span class="hint">${hint}</span>` : ''}</div>`;
+
+  /* ---------- Administration ---------- */
+  const TABS = [['', 'Résumé'], ['commandes', 'Commandes'], ['dossiers', 'Dossiers'], ['annonces', 'Annonces'], ['membres', 'Membres'], ['messages', 'Messages'], ['reglages', 'Réglages']];
+  const tbl = (head, rows, empty) => `<div class="twrap"><table><thead><tr>${head.map((h) => `<th${h.startsWith('>') ? ' class="r"' : ''}>${esc(h.replace(/^>/, ''))}</th>`).join('')}</tr></thead><tbody>${rows.join('') || `<tr><td colspan="${head.length}" class="muted">${esc(empty || DJ.empty)}</td></tr>`}</tbody></table></div>`;
+  T.route(/^\/admin(?:\/([a-z]+))?$/, async ([tab = '']) => {
+    T.title('Administration');
+    let body = '';
+    if (tab === '') {
+      const s = await T.get('/admin/stats'), max = Math.max(1, ...Object.values(s.byStatus));
+      body = `<div class="kpis"><div class="kpi"><small>Commissions confirmées</small><b>${dh(s.comConfirmed)}</b><span>Ventes dont la réception est confirmée</span></div><div class="kpi"><small>Commissions en cours</small><b>${dh(s.comPending)}</b><span>Commandes pas encore confirmées</span></div>
+        <div class="kpi dark"><small>Volume vendu</small><b>${dh(s.gmv)}</b><span>${s.orders} commande${s.orders > 1 ? 's' : ''}</span></div><div class="kpi dark"><small>À verser aux vendeurs</small><b>${dh(s.due)}</b><span>Déjà versé : ${dh(s.paid)}</span></div>
+        <div class="kpi dark"><small>Dossiers ouverts</small><b>${s.issues}</b></div><div class="kpi dark"><small>Membres · annonces</small><b>${s.users} · ${s.listings}</b></div></div>
+        <div class="panel" style="margin-top:20px"><h3 style="margin-bottom:14px">Commandes par statut</h3><div class="bars">${Object.entries(s.byStatus).map(([k, n]) => `<div class="b"><span>${esc(SH.ORDER_LBL[k] || k)}</span><span class="t"><i style="width:${(n / max) * 100}%"></i></span><b>${n}</b></div>`).join('') || `<p class="muted">${esc(DJ.empty)}.</p>`}</div></div>`;
+    } else if (tab === 'commandes') {
+      const { orders } = await T.get('/admin/orders');
+      body = `<div class="between" style="margin-bottom:14px"><span class="muted">${orders.length} commande${orders.length > 1 ? 's' : ''}</span><a class="btn btn-line btn-sm" data-native="1" href="/api/admin/export/orders.csv">Exporter en CSV</a></div>` + tbl(['Commande', 'Article', 'Acheteur', 'Vendeur', '>Prix', '>Commission', 'Statut', 'Versement', 'Actions'], orders.map((o) => `<tr><td><a class="link" href="/commande/${o.id}">${esc(o.code)}</a></td><td>${esc(o.title)}</td><td>${esc(o.buyer.name)}<br><span class="small muted">${esc(o.city)}</span></td><td>${esc(o.seller.name)}</td><td class="r">${dh(o.price)}</td><td class="r">${dh(o.commission)}</td><td>${T.pill(o.status)}</td><td>${T.payPill(o.payout)}</td>
+        <td><span class="row">${o.status === 'shipping' ? `<button class="btn btn-sm btn-fill" data-act="aord" data-a="deliver" data-id="${o.id}">Livré</button>` : ''}${o.payout === 'due' ? `<button class="btn btn-sm btn-fill" data-act="apay" data-id="${o.id}">Verser ${dh(o.net)}</button>` : ''}${['to_ship', 'shipping'].includes(o.status) ? `<button class="btn btn-sm btn-danger" data-act="acancel" data-id="${o.id}">Annuler</button>` : ''}</span></td></tr>`));
+    } else if (tab === 'dossiers') {
+      const { orders } = await T.get('/admin/orders?status=issue');
+      const det = await Promise.all(orders.map((o) => T.get('/orders/' + o.id)));
+      body = det.length ? `<div class="stack">${det.map(({ order: o }) => `<div class="panel"><div class="between"><h3>${esc(o.code)} · ${esc(o.title)}</h3>${T.pill(o.status)}</div><p class="muted small">${esc(o.buyer.name)} → vendeur ${esc(o.seller.name)} · ${dh(o.total)}</p><p style="margin:10px 0"><b>${esc(o.issue.reason)}</b><br>${esc(o.issue.text)}</p><div class="row"><button class="btn btn-fill btn-sm" data-act="aord" data-a="resolve" data-id="${o.id}">Résoudre : le parcours reprend</button><button class="btn btn-danger btn-sm" data-act="arefund" data-id="${o.id}">Rembourser l'acheteur</button><a class="btn btn-line btn-sm" href="/commande/${o.id}">Détail</a></div></div>`).join('')}</div>` : T.emptyBox(DJ.empty, 'Aucun dossier ouvert.');
+    } else if (tab === 'annonces') {
+      const { items } = await T.get('/admin/items');
+      body = tbl(['Annonce', 'Vendeur', '>Prix', 'Statut', 'Actions'], items.map((i) => `<tr><td><a class="link" href="/article/${i.id}">${esc(i.title)}</a></td><td>${esc(i.seller.name)}</td><td class="r">${dh(i.price)}</td><td><span class="pill">${esc({ published: 'En ligne', draft: 'Brouillon', hidden: 'Masquée', sold: 'Vendue' }[i.status])}</span></td><td><span class="row">${i.status === 'published' ? `<button class="btn btn-sm btn-line" data-act="aitem" data-a="hide" data-id="${i.id}">Masquer</button>` : ''}${i.status === 'hidden' ? `<button class="btn btn-sm btn-line" data-act="aitem" data-a="show" data-id="${i.id}">Remettre</button>` : ''}${i.status !== 'sold' ? `<button class="btn btn-sm btn-danger" data-act="aitem" data-a="delete" data-id="${i.id}">Retirer</button>` : ''}</span></td></tr>`));
+    } else if (tab === 'membres') {
+      const { users } = await T.get('/admin/users');
+      body = tbl(['Membre', 'E-mail', 'Ville', '>Annonces', '>Achats', '>Ventes', 'Actions'], users.map((u) => `<tr><td><a class="link" href="/vendeur/${u.id}">${esc(u.name)}</a> ${u.role === 'admin' ? '<span class="pill blue">admin</span>' : ''}${u.banned ? ' <span class="pill bad">suspendu</span>' : ''}</td><td>${esc(u.email)}</td><td>${esc(u.city)}</td><td class="r">${u.listings}</td><td class="r">${u.purchases}</td><td class="r">${u.sales}</td><td>${u.role === 'admin' ? '' : u.banned ? `<button class="btn btn-sm btn-line" data-act="auser" data-a="unban" data-id="${u.id}">Réactiver</button>` : `<button class="btn btn-sm btn-danger" data-act="auser" data-a="ban" data-id="${u.id}">Suspendre</button>`}</td></tr>`));
+    } else if (tab === 'messages') {
+      const { contacts } = await T.get('/admin/contacts');
+      body = contacts.length ? `<div class="stack">${contacts.map((c) => `<div class="panel"><div class="between"><b>${esc(c.topic)}</b><span class="muted small">${T.dateFr(c.ts)}</span></div><p class="small muted">${esc(c.name)} · ${esc(c.email)}</p><p style="white-space:pre-line;margin:8px 0">${esc(c.text)}</p>${c.done ? '<span class="pill ok">Traité</span>' : `<button class="btn btn-sm btn-line" data-act="adone" data-id="${c.id}">Marquer comme traité</button>`}</div>`).join('')}</div>` : T.emptyBox(DJ.empty, 'Aucun message.');
+    } else if (tab === 'reglages') {
+      const s = await T.get('/admin/settings');
+      body = `<form class="panel stack" style="max-width:520px" data-form="settings"><h3>Tarifs</h3>${fld('rate', 'Commission (%)', `<input class="in" id="rate" name="rate" type="number" min="0" max="30" step="0.5" value="${Math.round(s.rate * 1000) / 10}">`, 'Appliquée aux nouvelles commandes. Les commandes déjà passées gardent leur taux.')}${fld('ship', 'Frais de livraison (DH)', `<input class="in" id="ship" name="ship" type="number" min="0" max="200" value="${s.ship}">`, 'Payés par l\'acheteur, hors commission.')}<button class="btn btn-fill" type="submit">Enregistrer</button></form>`;
+    } else throw Object.assign(new Error('Page introuvable.'), { status: 404 });
+    return `<div class="wrap sp"><h1 class="h2" style="margin-bottom:18px">Administration</h1><nav class="tabs" aria-label="Administration">${TABS.map(([k, l]) => `<a href="/admin${k ? '/' + k : ''}"${k === tab ? ' aria-current="page"' : ''}>${l}</a>`).join('')}</nav>${body}</div>`;
+  }, { admin: true });
+  const adm = (url, msg) => async (el) => { if (await T.run(() => T.post(url(el), {}), msg)) T.render(); };
+  T.acts.aord = adm((el) => `/admin/orders/${el.dataset.id}/${el.dataset.a}`, DJ.done + ' !');
+  T.acts.aitem = async (el) => { if (el.dataset.a === 'delete' && !(await T.confirm('Retirer l\'annonce ?', 'Le vendeur sera prévenu.', 'Retirer', true))) return; if (await T.run(() => T.post(`/admin/items/${el.dataset.id}/${el.dataset.a}`), DJ.done + ' !')) T.render(); };
+  T.acts.auser = async (el) => { if (el.dataset.a === 'ban' && !(await T.confirm('Suspendre ce membre ?', 'Il sera déconnecté et ses annonces disparaîtront.', 'Suspendre', true))) return; if (await T.run(() => T.post(`/admin/users/${el.dataset.id}/${el.dataset.a}`), DJ.done + ' !')) T.render(); };
+  T.acts.adone = adm((el) => `/admin/contacts/${el.dataset.id}/done`, DJ.done + ' !');
+  T.acts.acancel = async (el) => { if (await T.confirm('Annuler la commande ?', 'L\'article sera remis en vente.', 'Annuler', true) && (await T.run(() => T.post(`/orders/${el.dataset.id}/cancel`), 'Commande annulée.'))) T.render(); };
+  T.acts.arefund = async (el) => { if (await T.confirm('Rembourser l\'acheteur ?', 'Prix et livraison remboursés, versement vendeur annulé, article masqué.', 'Rembourser', true) && (await T.run(() => T.post(`/admin/orders/${el.dataset.id}/refund`), 'Remboursement enregistré.'))) T.render(); };
+  T.acts.apay = async (el) => {
+    const r = await T.modal('<h3>Verser le vendeur</h3><p class="muted">Effectuez le virement puis notez la référence (facultatif).</p><form class="stack"><div class="field"><label for="rf">Référence du virement</label><input class="in" id="rf" name="reference" maxlength="80"></div><div class="row"><button class="btn btn-fill" type="submit">Versement effectué</button><button class="btn btn-line" type="button" data-close="no">Annuler</button></div></form>');
+    if (r && (await T.run(() => T.post(`/admin/orders/${el.dataset.id}/pay`, { reference: r.reference }), 'Versement enregistré.'))) T.render();
+  };
+  T.forms.settings = async (f) => { const d = T.formData(f); if (await T.run(() => T.post('/admin/settings', { rate: Number(d.rate) / 100, ship: Number(d.ship) }), 'Réglages enregistrés.')) { const c = await T.get('/config'); Object.assign(T.cfg, c); } };
+
+  /* ---------- Aide ---------- */
+  const FAQ = [
+    ['Comment acheter ?', 'Trouvez un article, cliquez sur « Acheter » (ou négociez avec « ' + DJ.offer + ' »), indiquez votre adresse. Vous payez le livreur à la réception.'],
+    ['Quand le vendeur est-il payé ?', 'Après votre confirmation de réception. Tant que vous n\'avez pas confirmé, le versement n\'est pas déclenché.'],
+    ['Et si l\'article ne correspond pas ?', 'Signalez un problème depuis votre commande avant de confirmer. Le versement est suspendu et notre équipe examine le dossier ; un remboursement est possible.'],
+    ['Combien coûte la vente ?', 'Poster est gratuit. Une commission de ' + Math.round(T.cfg.rate * 100) + ' % du prix de l\'article est retenue uniquement en cas de vente. La livraison est payée par l\'acheteur.'],
+    ['Comment expédier ?', 'Une fois la vente faite, emballez l\'article, remettez-le au transporteur puis cliquez sur « Marquer comme expédiée » dans votre commande.'],
+    ['Puis-je négocier ?', 'Oui. Proposez un prix plus bas ; le vendeur accepte, refuse ou répond. Le prix accepté est repris automatiquement au paiement.']
+  ];
+  T.route(/^\/aide$/, () => {
+    T.title('Aide'); const c = T.cfg.company;
+    return [`<div class="wrap sp"><h1 class="h2" style="margin-bottom:6px">${esc(DJ.help)}</h1><p class="muted" style="margin-bottom:24px">Les réponses rapides, puis un formulaire si vous ne trouvez pas.</p>
+      <div class="faq">${FAQ.map(([q, a]) => `<div class="q"><button type="button" data-act="faq" aria-expanded="false">${esc(q)}<span class="pl"></span></button><div class="ans"><div><p>${esc(a)}</p></div></div></div>`).join('')}</div>
+      <form class="panel stack" style="max-width:640px;margin-top:36px" data-form="contact"><h2>Nous écrire</h2>${T.user ? '' : fld('email', 'Votre e-mail', '<input class="in" id="email" name="email" type="email" required>')}
+      ${fld('topic', 'Sujet', `<select class="in" id="topic" name="topic">${T.opts(['Question sur le service', 'Réclamation', 'Suggestion', 'Autre'])}</select>`)}${fld('text', 'Message', '<textarea class="in" id="text" name="text" required minlength="5" maxlength="1000"></textarea>')}<button class="btn btn-fill" type="submit">Envoyer</button>${c.email ? `<p class="small muted">Ou par e-mail : ${esc(c.email)}${c.phone ? ' · ' + esc(c.phone) : ''}</p>` : ''}</form></div>`];
+  });
+  T.acts.faq = (el) => { const q = el.parentElement, on = !q.classList.contains('open'); q.classList.toggle('open', on); el.setAttribute('aria-expanded', on); };
+  T.forms.contact = async (f) => { T.fieldErr(f, ''); try { await T.post('/contact', T.formData(f)); f.outerHTML = `<p class="alert ok">${esc(DJ.thanks)} ! Message reçu, nous revenons vers vous vite.</p>`; } catch (e) { T.fieldErr(f, e.message); } };
+
+  /* ---------- Compte ---------- */
+  T.route(/^\/compte$/, () => {
+    T.title('Mon compte'); const u = T.user;
+    return `<div class="wrap sp"><h1 class="h2" style="margin-bottom:20px">Mon compte</h1><div class="two eq"><form class="panel stack" data-form="profile"><h2>Mes informations</h2>${fld('name', 'Nom', `<input class="in" id="name" name="name" value="${esc(u.name)}" maxlength="40" required>`)}${fld('email', 'E-mail', `<input class="in" id="email" value="${esc(u.email)}" disabled>`)}
+      ${fld('city', 'Ville', `<select class="in" id="city" name="city">${T.opts(SH.CITIES, u.city)}</select>`)}${fld('phone', 'Téléphone', `<input class="in" id="phone" name="phone" type="tel" value="${esc(u.phone || '')}">`)}<button class="btn btn-fill" type="submit">Enregistrer</button></form>
+      <div class="stack"><form class="panel stack" data-form="password"><h2>Mot de passe</h2>${fld('current', 'Actuel', '<input class="in" id="current" name="current" type="password" autocomplete="current-password" required>')}${fld('next', 'Nouveau (8 caractères min.)', '<input class="in" id="next" name="next" type="password" autocomplete="new-password" minlength="8" required>')}<button class="btn btn-line" type="submit">Changer</button></form>
+      <div class="panel stack"><h2>Zone sensible</h2><p class="small muted">Supprimer votre compte retire vos annonces. Impossible tant que des commandes sont en cours.</p><button class="btn btn-danger" data-act="delacc">Supprimer mon compte</button></div></div></div></div>`;
+  }, { auth: true });
+  T.forms.profile = async (f) => { const r = await T.run(() => T.api('PATCH', '/me', T.formData(f)), 'Informations enregistrées.'); if (r) { T.user = r.user; T.chrome(); } };
+  T.forms.password = async (f) => { if (await T.run(() => T.post('/me/password', T.formData(f)), 'Mot de passe modifié.')) f.reset(); };
+  T.acts.delacc = async () => {
+    const r = await T.modal('<h3>Supprimer mon compte</h3><p class="muted">Cette action est définitive. Entrez votre mot de passe pour confirmer.</p><form class="stack"><div class="field"><label for="dp">Mot de passe</label><input class="in" id="dp" name="password" type="password" required></div><div class="row"><button class="btn btn-danger" type="submit">Supprimer définitivement</button><button class="btn btn-line" type="button" data-close="no">Annuler</button></div></form>');
+    if (r && (await T.run(() => T.post('/me/delete', { password: r.password })))) { T.user = null; T.favs = new Set(); T.toast(DJ.bye + ' !'); T.go('/'); }
+  };
+
+  /* ---------- Pages légales (modèles à faire valider) ---------- */
+  const co = (k, label) => (T.cfg.company[k] ? esc(T.cfg.company[k]) : `<mark>[à compléter : ${label}]</mark>`);
+  const legal = (title, body) => () => { T.title(title); return `<div class="wrap sp"><article class="panel" style="max-width:820px;margin-inline:auto;line-height:1.7"><h1 class="h2" style="margin-bottom:18px">${title}</h1>${body()}</article></div>`; };
+  const H = (t) => `<h3 style="margin:22px 0 6px">${t}</h3>`;
+  T.route(/^\/mentions-legales$/, legal('Mentions légales', () => `<p>Le site Thrifty est édité par ${co('name', 'raison sociale')} (${co('legalForm', 'forme juridique')}), ${co('address', 'adresse du siège')}.</p><p>ICE : ${co('ice', 'numéro ICE')} · RC : ${co('rc', 'registre de commerce')}.</p><p>Contact : ${co('email', 'e-mail')}${T.cfg.company.phone ? ' · ' + esc(T.cfg.company.phone) : ''}.</p><p>Hébergeur : ${co('host', 'hébergeur')}.</p>`));
+  T.route(/^\/confidentialite$/, legal('Politique de confidentialité', () => `<p>Responsable du traitement : ${co('name', 'raison sociale')}, ${co('email', 'e-mail de contact')}.</p>${H('Données collectées')}<p>Nom, e-mail, ville, téléphone (facultatif), adresse de livraison lors d'une commande, contenu de vos annonces et de vos messages, avis.</p>${H('Finalités')}<p>Fournir le service (comptes, annonces, commandes, livraison, versements), assurer la sécurité et prévenir la fraude, répondre à vos demandes.</p>${H('Partage')}<p>Votre adresse et votre téléphone ne sont communiqués qu'à l'autre partie d'une commande (et au transporteur) pour assurer la livraison. Nous ne vendons pas vos données.</p>${H('Conservation')}<p>Pendant la durée de votre compte, puis selon les obligations légales (commandes, comptabilité).</p>${H('Vos droits')}<p>Accès, rectification, suppression et opposition, conformément à la loi n° 09-08 : écrivez à ${co('email', 'e-mail de contact')}. Vous pouvez aussi supprimer votre compte depuis « Mon compte ».</p>${H('Cookies')}<p>Un seul cookie technique (session de connexion), indispensable au fonctionnement. Aucun traceur publicitaire.</p>`));
+  T.route(/^\/cgu$/, legal('Conditions d\'utilisation', () => `<p>Thrifty est une place de marché de vêtements de seconde main : elle met en relation des vendeurs et des acheteurs. Les ventes sont conclues entre membres.</p>${H('Compte')}<p>Vous devez être majeur(e) et fournir des informations exactes. Vous êtes responsable de votre mot de passe.</p>${H('Annonces')}<p>Vous ne vendez que des articles qui vous appartiennent, décrits fidèlement (état, défauts, photos réelles). Les contrefaçons et articles interdits sont retirés et peuvent entraîner la suspension du compte.</p>${H('Commandes et paiement')}<p>Le paiement se fait à la livraison, en espèces. Le prix affiché est celui de l'article ; les frais de livraison (${dh(T.cfg.ship)}) sont à la charge de l'acheteur.</p>${H('Commission')}<p>Une commission de ${Math.round(T.cfg.rate * 100)} % du prix de l'article est retenue sur le prix versé au vendeur lors d'une vente confirmée.</p>${H('Réception, litiges et versement')}<p>L'acheteur vérifie le colis et confirme la réception ; le vendeur est ensuite payé. En cas de problème, l'acheteur le signale avant confirmation : le versement est suspendu et le dossier examiné, pouvant aboutir à un remboursement.</p>${H('Responsabilité')}<p>Thrifty n'est pas partie aux ventes entre membres ; elle fournit l'outil, la médiation en cas de litige et peut suspendre tout compte ou annonce contraire aux présentes conditions.</p>${H('Contact')}<p>${co('name', 'raison sociale')} · ${co('email', 'e-mail')}</p>`));
+})();
