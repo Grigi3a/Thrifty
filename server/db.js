@@ -74,6 +74,49 @@ CREATE TABLE IF NOT EXISTS contacts(id INTEGER PRIMARY KEY, user_id INTEGER, nam
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `);
 
+/* ---- Migrations additives (sûres sur une base existante) ---- */
+function addCol(table, col, ddl) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+  if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
+}
+addCol('items', 'fit', "TEXT NOT NULL DEFAULT ''");
+addCol('items', 'measures', "TEXT NOT NULL DEFAULT ''");
+addCol('items', 'published_at', 'INTEGER');
+db.exec("UPDATE items SET published_at=created WHERE published_at IS NULL AND status IN ('published','sold','hidden')");
+addCol('users', 'bio', "TEXT NOT NULL DEFAULT ''");
+addCol('users', 'email_verified', 'INTEGER NOT NULL DEFAULT 0');
+addCol('orders', 'group_id', 'INTEGER');
+addCol('orders', 'bundle_title', "TEXT NOT NULL DEFAULT ''");
+db.exec(`
+CREATE TABLE IF NOT EXISTS collections(
+  id INTEGER PRIMARY KEY, slug TEXT NOT NULL UNIQUE, title TEXT NOT NULL, descr TEXT NOT NULL DEFAULT '', cover TEXT NOT NULL DEFAULT '',
+  position INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, created INTEGER NOT NULL, updated INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS collection_items(
+  collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE, item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+  pos INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(collection_id, item_id)
+);
+CREATE TABLE IF NOT EXISTS bundles(
+  id INTEGER PRIMARY KEY, seller_id INTEGER NOT NULL REFERENCES users(id), title TEXT NOT NULL, price INTEGER NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1, created INTEGER NOT NULL, updated INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS bundle_items(
+  bundle_id INTEGER NOT NULL REFERENCES bundles(id) ON DELETE CASCADE, item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+  PRIMARY KEY(bundle_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_bundle_items_item ON bundle_items(item_id);
+CREATE TABLE IF NOT EXISTS saved_searches(
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, params TEXT NOT NULL,
+  alerts INTEGER NOT NULL DEFAULT 1, email INTEGER NOT NULL DEFAULT 0, last_checked INTEGER NOT NULL, created INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reports(
+  id INTEGER PRIMARY KEY, reporter_id INTEGER NOT NULL, target_type TEXT NOT NULL, target_id INTEGER NOT NULL, reason TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open', note TEXT NOT NULL DEFAULT '', ts INTEGER NOT NULL, handled_ts INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status, ts DESC);
+CREATE TABLE IF NOT EXISTS email_tokens(token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, purpose TEXT NOT NULL, expires INTEGER NOT NULL);
+`);
+
 const cache = new Map();
 const prep = (sql) => { let s = cache.get(sql); if (!s) { s = db.prepare(sql); cache.set(sql, s); } return s; };
 const clean = (p) => p.map((x) => (x === undefined ? null : x));

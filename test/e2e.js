@@ -21,8 +21,8 @@ const ok = (c, m) => { console.log((c ? 'OK   ' : 'FAIL ') + m); if (!c) fails++
   const shot = (p, n) => SHOTS && p.screenshot({ path: path.join(SHOTS, n + '.png'), fullPage: true });
   try {
     const S = await mk({ viewport: { width: 1280, height: 900 } });
-    await S.goto(URL + '/'); await S.waitForSelector('.hero');
-    ok(await S.locator('.display').innerText().then((t) => /Seconde main/.test(t)), 'accueil affiché');
+    await S.goto(URL + '/'); await S.waitForSelector('.hero2');
+    ok(await S.locator('.hero2 h1').innerText().then((t) => /Seconde main/.test(t)), 'accueil affiché');
     ok(await S.locator('.tile').count() === 3, 'accueil : 3 univers');
     ok(await S.locator('text=Marhba bik').count() > 0, 'darija présent');
     await shot(S, 'home');
@@ -61,7 +61,7 @@ const ok = (c, m) => { console.log((c ? 'OK   ' : 'FAIL ') + m); if (!c) fails++
     await B.click('.buy a.btn-fill'); await B.waitForSelector('form[data-form=order]');
     await B.fill('#address', '12 rue des Fleurs, Agdal'); await B.fill('#phone', '0612345678'); await shot(B, 'checkout');
     await B.click('form[data-form=order] button[type=submit]'); await B.waitForURL(/\/commande\/\d+/); await B.waitForSelector('.stepper2');
-    ok(/145/.test(await B.locator('.lines .big dd').innerText()), 'total 120 + 25 = 145 DH');
+    ok(/145/.test(await B.locator('.lines .big dd').innerText()), 'total 120 + livraison');
     await shot(B, 'order');
     // vendeuse expédie
     await S.goto(B.url()); await S.click('[data-act=oship]'); await S.fill('.modal #tr', 'AB1'); await S.click('.modal button[type=submit]'); await S.waitForSelector('.stp.on:nth-child(2)');

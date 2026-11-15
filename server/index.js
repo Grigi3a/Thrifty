@@ -20,7 +20,11 @@ app.set('trust proxy', process.env.TRUST_PROXY === '1' ? 1 : false);
 /* ---------- helpers ---------- */
 const A = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 const now = () => Date.now();
-const rate = () => { const r = parseFloat(getSetting('rate', process.env.DEFAULT_COMMISSION_RATE || '0.10')); return Number.isFinite(r) ? r : 0.1; };
+const baseRate = () => { const r = parseFloat(getSetting('rate', process.env.DEFAULT_COMMISSION_RATE || '0.10')); return Number.isFinite(r) ? r : 0.1; };
+/* Offre de lancement : jamais active tant que l'administrateur ne l'a pas activée ET fixé une période. */
+const launch = () => ({ on: getSetting('launch_on', '0') === '1', rate: Math.min(0.3, Math.max(0, parseFloat(getSetting('launch_rate', '0')) || 0)), start: Number(getSetting('launch_start', '0')) || 0, end: Number(getSetting('launch_end', '0')) || 0 });
+const launchActive = (t = Date.now()) => { const l = launch(); return l.on && l.end > l.start && t >= l.start && t < l.end; };
+const rate = () => (launchActive() ? launch().rate : baseRate());
 const shipFee = () => { const s = parseInt(getSetting('ship', process.env.DEFAULT_SHIPPING || '25'), 10); return Number.isFinite(s) ? s : 25; };
 const money = (price) => { const r = rate(), s = shipFee(), c = Math.round(price * r * 100) / 100; return { price, ship: s, total: price + s, rate: r, commission: c, net: Math.round((price - c) * 100) / 100 }; };
 const base = (req) => (process.env.BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
@@ -78,12 +82,17 @@ app.use('/api', (req, res, next) => {
 });
 const needUser = (req, res, next) => (req.user ? next() : next(new HttpError(401, 'Connectez-vous pour continuer.')));
 const needAdmin = (req, res, next) => (req.user && req.user.role === 'admin' ? next() : next(new HttpError(403, 'Accès réservé à l\'administration.')));
-const publicUser = (u) => (u ? { id: u.id, name: u.name, email: u.email, city: u.city, phone: u.phone, role: u.role } : null);
+const publicUser = (u) => (u ? { id: u.id, name: u.name, email: u.email, city: u.city, phone: u.phone, role: u.role, bio: u.bio || '', emailVerified: !!u.email_verified } : null);
 
 /* ---------- config ---------- */
 app.get('/api/config', (req, res) => {
   res.json({
-    rate: rate(), ship: shipFee(), paymentMethods: payments.enabled().map((m) => ({ id: m.id, label: m.label })),
+    rate: rate(), baseRate: baseRate(), ship: shipFee(),
+    launch: launchActive() ? { active: true, rate: launch().rate, end: launch().end } : null,
+    drops: get("SELECT COUNT(*) n FROM collections c WHERE c.active=1 AND EXISTS (SELECT 1 FROM collection_items ci JOIN items i ON i.id=ci.item_id JOIN users u ON u.id=i.seller_id WHERE ci.collection_id=c.id AND i.status='published' AND u.banned=0)").n > 0,
+    mailEnabled: !!process.env.SMTP_URL, zones: SH.ZONES,
+    handover: [{ id: 'carrier', label: 'Livraison par transporteur', fee: shipFee() }],
+    paymentMethods: payments.enabled().map((m) => ({ id: m.id, label: m.label })),
     company: { name: process.env.COMPANY_NAME || '', legalForm: process.env.COMPANY_LEGAL_FORM || '', address: process.env.COMPANY_ADDRESS || '', ice: process.env.COMPANY_ICE || '', rc: process.env.COMPANY_RC || '', email: process.env.CONTACT_EMAIL || '', phone: process.env.CONTACT_PHONE || '', host: process.env.HOSTING_PROVIDER || '' }
   });
 });
@@ -124,7 +133,7 @@ app.patch('/api/me', needUser, A(async (req, res) => {
   const b = req.body || {}, name = L.clean(b.name, 40);
   if (name.length < 2) throw bad('Entrez votre nom.');
   if (!SH.CITIES.includes(b.city)) throw bad('Choisissez votre ville.');
-  run('UPDATE users SET name=?, city=?, phone=? WHERE id=?', name, b.city, L.normPhone(b.phone), req.user.id);
+  run('UPDATE users SET name=?, city=?, phone=?, bio=? WHERE id=?', name, b.city, L.normPhone(b.phone), L.cleanText(b.bio, 300), req.user.id);
   res.json({ user: publicUser(get('SELECT * FROM users WHERE id=?', req.user.id)) });
 }));
 app.post('/api/me/password', needUser, authLimit, A(async (req, res) => {
@@ -198,8 +207,13 @@ function photosFor(ids) {
 const itemOut = (r, ph) => ({
   id: r.id, seller: { id: r.seller_id, name: r.seller_name, city: r.seller_city }, univ: r.univ, cat: r.cat, title: r.title, brand: r.brand, size: r.size, color: r.color,
   cond: r.cond, defects: r.defects, desc: r.descr, price: r.price, oldPrice: r.old_price && r.old_price > r.price ? r.old_price : null, city: r.city, pack: r.pack,
-  status: r.status, created: r.created, photos: (ph[r.id] || []).map((f) => '/uploads/' + f)
+  status: r.status, created: r.created, photos: (ph[r.id] || []).map((f) => '/uploads/' + f),
+  fit: r.fit || '', measures: measuresOut(r)
 });
+function measuresOut(r) {
+  let m = {}; try { m = r.measures ? JSON.parse(r.measures) : {}; } catch { m = {}; }
+  return SH.measuresFor(r.cat).filter((d) => Number.isFinite(m[d.k])).map((d) => ({ k: d.k, label: d.label, value: m[d.k] }));
+}
 const itemsOut = (rows) => { const ph = photosFor(rows.map((r) => r.id)); return rows.map((r) => itemOut(r, ph)); };
 function sellerStats(id) {
   const r = get('SELECT COUNT(*) n, AVG(rating) avg FROM reviews r JOIN orders o ON o.id=r.order_id WHERE o.seller_id=?', id);
@@ -208,17 +222,24 @@ function sellerStats(id) {
 }
 const list = (v) => String(v || '').split(',').map((x) => x.trim()).filter(Boolean).slice(0, 20);
 
-app.get('/api/items', A(async (req, res) => {
-  const q = req.query, w = ["i.status='published'", 'u.banned=0'], p = [];
+/* Filtre commun : catalogue, recherches sauvegardées, alertes. Renvoie { w, p } (conditions SQL + paramètres). */
+function buildItemFilter(q) {
+  const w = ["i.status='published'", 'u.banned=0'], p = [];
   if (SH.UNIV[q.univ]) { w.push('i.univ=?'); p.push(q.univ); }
   const cats = list(q.cat).filter((c) => SH.CATS.includes(c)); if (cats.length) { w.push(`i.cat IN (${cats.map(() => '?').join(',')})`); p.push(...cats); }
   const sizes = list(q.size); if (sizes.length) { w.push(`i.size IN (${sizes.map(() => '?').join(',')})`); p.push(...sizes); }
   const conds = list(q.cond).filter((c) => SH.COND.includes(c)); if (conds.length) { w.push(`i.cond IN (${conds.map(() => '?').join(',')})`); p.push(...conds); }
   const mx = L.int(q.max); if (mx > 0) { w.push('i.price<=?'); p.push(mx); }
-  if (SH.CITIES.includes(q.city)) { w.push('i.city=?'); p.push(q.city); }
+  const brand = L.clean(q.brand, 50); if (brand) { w.push("i.brand LIKE ? ESCAPE '\\' COLLATE NOCASE"); p.push('%' + brand.replace(/[\\%_]/g, '\\$&') + '%'); }
+  if (SH.ZONES[q.zone]) { const c = SH.ZONES[q.zone].cities; w.push(`i.city IN (${c.map(() => '?').join(',')})`); p.push(...c); }
+  else if (SH.CITIES.includes(q.city)) { w.push('i.city=?'); p.push(q.city); }
   if (q.promo === '1') w.push('i.old_price IS NOT NULL AND i.old_price>i.price');
   const sid = L.int(q.seller); if (sid > 0) { w.push('i.seller_id=?'); p.push(sid); }
   L.norm(q.q).split(/\s+/).filter(Boolean).slice(0, 6).forEach((t) => { w.push("i.search LIKE ? ESCAPE '\\'"); p.push('%' + t.replace(/[\\%_]/g, '\\$&') + '%'); });
+  return { w, p };
+}
+app.get('/api/items', A(async (req, res) => {
+  const q = req.query, { w, p } = buildItemFilter(q);
   const order = q.sort === 'asc' ? 'i.price ASC, i.id DESC' : q.sort === 'desc' ? 'i.price DESC, i.id DESC' : 'i.created DESC, i.id DESC';
   const per = clampInt(q.per, 1, 48, 24), page = clampInt(q.page, 1, 1000, 1), where = w.join(' AND ');
   const total = get(`SELECT COUNT(*) n FROM items i JOIN users u ON u.id=i.seller_id WHERE ${where}`, ...p).n;
@@ -266,6 +287,14 @@ function checkItem(b, publish, userId, itemId) {
     if (!own && (!up || up.user_id !== userId)) errors.push('Une photo n\'est pas valide. Ajoutez-la à nouveau.');
   }
   v.photos = photos;
+  v.fit = Object.keys(SH.FITS).includes(b.fit) ? b.fit : '';
+  const mm = {}, rawM = b.measures && typeof b.measures === 'object' ? b.measures : {};
+  for (const d of v.cat ? SH.measuresFor(v.cat) : []) {
+    const raw = rawM[d.k]; if (raw === '' || raw == null) continue;
+    const n = Math.round(Number(raw) * 10) / 10;
+    if (!Number.isFinite(n) || n < 1 || n > 300) errors.push(`${d.label} : entrez une valeur en centimètres entre 1 et 300.`); else mm[d.k] = n;
+  }
+  v.measures = Object.keys(mm).length ? JSON.stringify(mm) : '';
   if (publish) {
     if (!photos.length) errors.push('Ajoutez au moins une photo.');
     if (v.desc.length < 10) errors.push('Ajoutez une description (10 caractères minimum).');
@@ -293,8 +322,8 @@ app.post('/api/items', needUser, L.rateLimit('itemw', 60, 3600000, (r) => 'u' + 
   const { errors, v } = checkItem(req.body || {}, publish, req.user.id, 0);
   if (errors.length) throw bad(errors[0], errors);
   const id = tx(() => {
-    const r = run('INSERT INTO items(seller_id,univ,cat,title,brand,size,color,cond,defects,descr,price,city,pack,status,search,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-      req.user.id, v.univ, v.cat, v.title, v.brand, v.size, v.color, v.cond, v.defects, v.desc, v.price, v.city, v.pack, publish ? 'published' : 'draft', searchText(v), now(), now());
+    const r = run('INSERT INTO items(seller_id,univ,cat,title,brand,size,color,cond,defects,descr,price,city,pack,status,search,created,updated,fit,measures,published_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      req.user.id, v.univ, v.cat, v.title, v.brand, v.size, v.color, v.cond, v.defects, v.desc, v.price, v.city, v.pack, publish ? 'published' : 'draft', searchText(v), now(), now(), v.fit, v.measures, publish ? now() : null);
     savePhotos(r.id, v.photos);
     return r.id;
   });
@@ -317,8 +346,8 @@ app.put('/api/items/:id', needUser, A(async (req, res) => {
   else if (v.price >= it.price && old && old <= v.price) old = null;
   if (req.body.publish === true && (it.status === 'draft' || it.status === 'hidden')) status = 'published';
   tx(() => {
-    run('UPDATE items SET univ=?,cat=?,title=?,brand=?,size=?,color=?,cond=?,defects=?,descr=?,price=?,old_price=?,city=?,pack=?,status=?,paused_hide=0,search=?,updated=? WHERE id=?',
-      v.univ, v.cat, v.title, v.brand, v.size, v.color, v.cond, v.defects, v.desc, v.price, old, v.city, v.pack, status, searchText(v), now(), it.id);
+    run('UPDATE items SET univ=?,cat=?,title=?,brand=?,size=?,color=?,cond=?,defects=?,descr=?,price=?,old_price=?,city=?,pack=?,status=?,paused_hide=0,search=?,updated=?,fit=?,measures=?,published_at=CASE WHEN ?=1 THEN ? ELSE published_at END WHERE id=?',
+      v.univ, v.cat, v.title, v.brand, v.size, v.color, v.cond, v.defects, v.desc, v.price, old, v.city, v.pack, status, searchText(v), now(), v.fit, v.measures, status === 'published' && it.status !== 'published' ? 1 : 0, now(), it.id);
     savePhotos(it.id, v.photos);
   });
   if (status === 'published' && v.price && v.price < it.price) notifyFavs({ id: it.id, title: v.title, price: v.price }, it.price, req.user.id);
@@ -334,10 +363,10 @@ app.post('/api/items/:id/price', needUser, A(async (req, res) => {
   res.json({ ok: true });
 }));
 app.post('/api/items/:id/hide', needUser, A(async (req, res) => { const it = ownItem(req); if (it.status !== 'published') throw bad('Annonce non publiée.'); run("UPDATE items SET status='hidden', paused_hide=0 WHERE id=?", it.id); res.json({ ok: true }); }));
-app.post('/api/items/:id/unhide', needUser, A(async (req, res) => { const it = ownItem(req); if (it.status !== 'hidden') throw bad('Annonce non masquée.'); run("UPDATE items SET status='published', paused_hide=0 WHERE id=?", it.id); res.json({ ok: true }); }));
+app.post('/api/items/:id/unhide', needUser, A(async (req, res) => { const it = ownItem(req); if (it.status !== 'hidden') throw bad('Annonce non masquée.'); run("UPDATE items SET status='published', paused_hide=0, published_at=? WHERE id=?", now(), it.id); res.json({ ok: true }); }));
 app.delete('/api/items/:id', needUser, A(async (req, res) => { const it = ownItem(req); if (it.status === 'sold') throw bad('Une annonce vendue ne peut pas être supprimée.'); run('DELETE FROM items WHERE id=?', it.id); res.json({ ok: true }); }));
 app.post('/api/my/pause', needUser, (req, res) => { run("UPDATE items SET status='hidden', paused_hide=1 WHERE seller_id=? AND status='published'", req.user.id); res.json({ ok: true }); });
-app.post('/api/my/resume', needUser, (req, res) => { run("UPDATE items SET status='published', paused_hide=0 WHERE seller_id=? AND paused_hide=1 AND status='hidden'", req.user.id); res.json({ ok: true }); });
+app.post('/api/my/resume', needUser, (req, res) => { run("UPDATE items SET status='published', paused_hide=0, published_at=? WHERE seller_id=? AND paused_hide=1 AND status='hidden'", now(), req.user.id); res.json({ ok: true }); });
 app.get('/api/my/items', needUser, A(async (req, res) => {
   const rows = all(`${ITEM_SELECT} WHERE i.seller_id=? ORDER BY i.created DESC`, req.user.id);
   const orders = all('SELECT id,item_id FROM orders WHERE seller_id=?', req.user.id);
@@ -449,14 +478,16 @@ function orderOut(o, viewer, full) {
   const out = {
     id: o.id, code: code(o.id), itemId: o.item_id, title: o.item_title, brand: o.item_brand, size: o.item_size, photo: o.item_photo ? '/uploads/' + o.item_photo : null,
     buyer: { id: o.buyer_id, name: o.buyer_name }, seller: { id: o.seller_id, name: o.seller_name }, price: o.price, ship: o.ship, total: o.total, rate: o.rate,
-    commission: o.commission, net: o.net, status: o.status, payout: o.payout, pack: o.pack, city: o.ship_city, paymentMethod: o.payment_method, tracking: o.tracking, created: o.created
+    commission: o.commission, net: o.net, status: o.status, payout: o.payout, pack: o.pack, city: o.ship_city, paymentMethod: o.payment_method, tracking: o.tracking, created: o.created,
+    groupId: o.group_id || null, bundleTitle: o.bundle_title || ''
   };
   if (full) {
     const ok = viewer.role === 'admin' || viewer.id === o.buyer_id || viewer.id === o.seller_id;
     if (ok) { out.shipName = o.ship_name; out.address = o.ship_address; out.phone = o.ship_phone; }
     out.payoutRef = o.payout_ref;
     out.issue = o.issue_reason ? { reason: o.issue_reason, text: o.issue_text, ts: o.issue_ts } : null;
-    const r = get('SELECT * FROM reviews WHERE order_id=?', o.id); out.review = r ? { rating: r.rating, text: r.text, ts: r.ts } : null;
+    const r = get('SELECT * FROM reviews WHERE order_id=?', o.group_id || o.id); out.review = r ? { rating: r.rating, text: r.text, ts: r.ts } : null;
+    if (o.group_id) out.siblings = all('SELECT id,item_id,item_title,item_photo,price FROM orders WHERE group_id=? AND id<>? ORDER BY id', o.group_id, o.id).map((x) => ({ id: x.id, code: code(x.id), itemId: x.item_id, title: x.item_title, photo: x.item_photo ? '/uploads/' + x.item_photo : null, price: x.price }));
     out.events = all('SELECT text AS t, ts FROM order_events WHERE order_id=? ORDER BY ts, id', o.id);
   }
   return out;
@@ -504,15 +535,16 @@ function orderFor(req) {
   return o;
 }
 app.get('/api/orders/:id', needUser, A(async (req, res) => res.json({ order: orderOut(orderFor(req), req.user, true) })));
+/* Commandes d'un même lot : un seul colis, donc les étapes s'appliquent à toutes les pièces à la fois. */
+const sibs = (o) => (o.group_id ? all('SELECT * FROM orders WHERE group_id=? AND status=?', o.group_id, o.status) : [o]);
 function changed(o, status, payout, text) {
-  run('UPDATE orders SET status=?, payout=COALESCE(?,payout) WHERE id=?', status, payout, o.id);
-  evt(o.id, text);
+  for (const s of sibs(o)) { run('UPDATE orders SET status=?, payout=COALESCE(?,payout) WHERE id=?', status, payout, s.id); evt(s.id, text); }
 }
 const rb = (req) => req.body || {};
 app.post('/api/orders/:id/ship', needUser, A(async (req, res) => {
   const o = orderFor(req);
   if (o.seller_id !== req.user.id || o.status !== 'to_ship') throw new HttpError(409, 'Action impossible pour cette commande.');
-  run('UPDATE orders SET tracking=? WHERE id=?', L.clean(rb(req).tracking, 60), o.id);
+  sibs(o).forEach((x) => run('UPDATE orders SET tracking=? WHERE id=?', L.clean(rb(req).tracking, 60), x.id));
   changed(o, 'shipping', null, 'Expédiée par le vendeur');
   notify(o.buyer_id, `Votre commande ${o.item_title} est expédiée.`, '/commande/' + o.id);
   res.json({ ok: true });
@@ -530,7 +562,7 @@ app.post('/api/orders/:id/issue', needUser, A(async (req, res) => {
   if (o.buyer_id !== req.user.id || !['to_ship', 'shipping', 'delivered'].includes(o.status)) throw new HttpError(409, 'Action impossible pour cette commande.');
   if (!reason) throw bad('Choisissez un motif.');
   if (text.length < 5) throw bad('Décrivez brièvement le problème.');
-  run('UPDATE orders SET prev_status=?, issue_reason=?, issue_text=?, issue_ts=? WHERE id=?', o.status, reason, text, now(), o.id);
+  sibs(o).forEach((x) => run('UPDATE orders SET prev_status=?, issue_reason=?, issue_text=?, issue_ts=? WHERE id=?', o.status, reason, text, now(), x.id));
   changed(o, 'issue', 'suspended', 'Problème signalé : ' + reason);
   notify(o.seller_id, `Problème signalé sur ${o.item_title}. Versement suspendu.`, '/commande/' + o.id);
   notifyAdmins(`Nouveau dossier ${code(o.id)} : ${reason}`, '/admin/dossiers');
@@ -541,8 +573,9 @@ app.post('/api/orders/:id/cancel', needUser, A(async (req, res) => {
   const okState = o.status === 'to_ship' || (adm && o.status === 'shipping');
   if (!okState || !(adm || o.seller_id === req.user.id || o.buyer_id === req.user.id)) throw new HttpError(409, 'Action impossible pour cette commande.');
   tx(() => {
+    const S = sibs(o);
     changed(o, 'cancelled', 'cancelled', `Commande annulée par ${adm ? 'l\'administration' : o.seller_id === req.user.id ? 'le vendeur' : 'l\'acheteur'}`);
-    if (o.item_id) run("UPDATE items SET status='published' WHERE id=? AND status='sold'", o.item_id);
+    S.forEach((x) => { if (x.item_id) run("UPDATE items SET status='published' WHERE id=? AND status='sold'", x.item_id); });
   });
   [o.buyer_id, o.seller_id].filter((x) => x !== req.user.id).forEach((u) => notify(u, `Commande ${o.item_title} annulée.`, '/commande/' + o.id));
   res.json({ ok: true });
@@ -550,22 +583,16 @@ app.post('/api/orders/:id/cancel', needUser, A(async (req, res) => {
 app.post('/api/orders/:id/review', needUser, A(async (req, res) => {
   const o = orderFor(req), rating = L.int(rb(req).rating);
   if (o.buyer_id !== req.user.id || o.status !== 'confirmed') throw new HttpError(409, 'Vous pourrez laisser un avis après avoir confirmé la réception.');
-  if (get('SELECT 1 x FROM reviews WHERE order_id=?', o.id)) throw new HttpError(409, 'Avis déjà publié.');
+  const rid = o.group_id || o.id;
+  if (get('SELECT 1 x FROM reviews WHERE order_id=?', rid)) throw new HttpError(409, 'Avis déjà publié.');
   if (!(rating >= 1 && rating <= 5)) throw bad('Choisissez une note de 1 à 5.');
-  run('INSERT INTO reviews(order_id,rating,text,ts) VALUES(?,?,?,?)', o.id, rating, L.cleanText(rb(req).text, 500), now());
+  run('INSERT INTO reviews(order_id,rating,text,ts) VALUES(?,?,?,?)', rid, rating, L.cleanText(rb(req).text, 500), now());
   evt(o.id, 'Avis publié');
   notify(o.seller_id, `${req.user.name} a laissé un avis ${rating}/5.`, '/commande/' + o.id);
   res.json({ ok: true });
 }));
 
 /* ---------- seller public page ---------- */
-app.get('/api/sellers/:id', A(async (req, res) => {
-  const u = get('SELECT id,name,city,created FROM users WHERE id=? AND banned=0 AND deleted=0', idParam(req.params.id));
-  if (!u) throw new HttpError(404, 'Vendeur introuvable.');
-  const reviews = all('SELECT r.rating,r.text,r.ts,b.name AS buyer FROM reviews r JOIN orders o ON o.id=r.order_id JOIN users b ON b.id=o.buyer_id WHERE o.seller_id=? ORDER BY r.ts DESC LIMIT 30', u.id);
-  res.json({ seller: { id: u.id, name: u.name, city: u.city, since: u.created }, stats: sellerStats(u.id), reviews });
-}));
-
 /* ---------- notifications, badges, contact, report ---------- */
 app.get('/api/badges', needUser, (req, res) => {
   const u = req.user.id;
@@ -585,14 +612,6 @@ app.post('/api/contact', contactLimit, A(async (req, res) => {
   notifyAdmins('Nouveau message de contact', '/admin/messages');
   res.json({ ok: true });
 }));
-app.post('/api/report', needUser, contactLimit, A(async (req, res) => {
-  const it = get('SELECT id,title FROM items WHERE id=?', idParam(rb(req).itemId));
-  if (!it) throw new HttpError(404, 'Annonce introuvable.');
-  run('INSERT INTO contacts(user_id,name,email,topic,text,ts) VALUES(?,?,?,?,?,?)', req.user.id, req.user.name, req.user.email, 'Signalement', `Annonce #${it.id} « ${it.title} » : ${L.cleanText(rb(req).reason, 500) || 'sans précision'}`, now());
-  notifyAdmins(`Signalement : annonce #${it.id}`, '/admin/messages');
-  res.json({ ok: true });
-}));
-
 /* ---------- admin ---------- */
 const admin = [needUser, needAdmin];
 app.get('/api/admin/stats', admin, (req, res) => {
@@ -606,7 +625,7 @@ app.get('/api/admin/stats', admin, (req, res) => {
     due: sum(os.filter((o) => o.payout === 'due'), (o) => o.net), paid: sum(os.filter((o) => o.payout === 'paid'), (o) => o.net),
     issues: byStatus.issue || 0, byStatus, users: get("SELECT COUNT(*) n FROM users WHERE deleted=0").n, listings: get("SELECT COUNT(*) n FROM items WHERE status='published'").n,
     recent: os.slice(0, 8).map((o) => ({ id: o.id, code: code(o.id), commission: o.commission, status: o.status })),
-    unreadContacts: get('SELECT COUNT(*) n FROM contacts WHERE done=0').n
+    unreadContacts: get('SELECT COUNT(*) n FROM contacts WHERE done=0').n, openReports: get("SELECT COUNT(*) n FROM reports WHERE status='open'").n
   });
 });
 app.get('/api/admin/orders', admin, (req, res) => {
@@ -619,10 +638,10 @@ app.post('/api/admin/orders/:id/:action', admin, A(async (req, res) => {
   if (a === 'deliver' && o.status === 'shipping') { changed(o, 'delivered', null, 'Livraison confirmée par l\'administration'); notify(o.buyer_id, `Votre commande ${o.item_title} est livrée. Vérifiez-la puis confirmez la réception.`, '/commande/' + o.id); }
   else if (a === 'resolve' && o.status === 'issue') { changed(o, o.prev_status || 'shipping', 'pending', 'Dossier résolu : le parcours reprend'); [o.buyer_id, o.seller_id].forEach((u) => notify(u, `Le dossier sur ${o.item_title} est résolu.`, '/commande/' + o.id)); }
   else if (a === 'refund' && o.status === 'issue') {
-    tx(() => { changed(o, 'refunded', 'cancelled', 'Remboursement intégral enregistré (prix et livraison)'); if (o.item_id) run("UPDATE items SET status='hidden' WHERE id=?", o.item_id); });
+    tx(() => { const S = sibs(o); changed(o, 'refunded', 'cancelled', 'Remboursement intégral enregistré (prix et livraison)'); S.forEach((x) => { if (x.item_id) run("UPDATE items SET status='hidden' WHERE id=?", x.item_id); }); });
     [o.buyer_id, o.seller_id].forEach((u) => notify(u, `Commande ${o.item_title} remboursée.`, '/commande/' + o.id));
   } else if (a === 'pay' && o.payout === 'due') {
-    run('UPDATE orders SET payout_ref=? WHERE id=?', L.clean(rb(req).reference, 80), o.id);
+    sibs(o).forEach((x) => run('UPDATE orders SET payout_ref=? WHERE id=?', L.clean(rb(req).reference, 80), x.id));
     changed(o, o.status, 'paid', 'Versement vendeur exécuté' + (rb(req).reference ? ' (réf. ' + L.clean(rb(req).reference, 80) + ')' : ''));
     notify(o.seller_id, `Versement de ${dh(o.net)} exécuté pour ${o.item_title}.`, '/versements');
   } else throw new HttpError(409, 'Action impossible pour cette commande.');
@@ -634,7 +653,7 @@ app.post('/api/admin/items/:id/:action', admin, A(async (req, res) => {
   if (!it) throw new HttpError(404, 'Annonce introuvable.');
   const a = req.params.action;
   if (a === 'hide') run("UPDATE items SET status='hidden' WHERE id=? AND status='published'", it.id);
-  else if (a === 'show') run("UPDATE items SET status='published' WHERE id=? AND status='hidden'", it.id);
+  else if (a === 'show') run("UPDATE items SET status='published', published_at=? WHERE id=? AND status='hidden'", now(), it.id);
   else if (a === 'delete') { if (it.status === 'sold') throw bad('Annonce vendue : impossible de la retirer.'); run('DELETE FROM items WHERE id=?', it.id); }
   else throw new HttpError(404, 'Action inconnue.');
   notify(it.seller_id, `Votre annonce « ${it.title} » a été ${a === 'hide' ? 'masquée' : a === 'show' ? 'remise en ligne' : 'retirée'} par l'administration.`, '/dressing');
@@ -650,11 +669,21 @@ app.post('/api/admin/users/:id/:action', admin, A(async (req, res) => {
   else throw new HttpError(404, 'Action inconnue.');
   res.json({ ok: true });
 }));
-app.get('/api/admin/settings', admin, (req, res) => res.json({ rate: rate(), ship: shipFee() }));
+app.get('/api/admin/settings', admin, (req, res) => { const l = launch(); res.json({ rate: baseRate(), ship: shipFee(), effectiveRate: rate(), launch: { on: l.on, rate: l.rate, start: l.start, end: l.end, active: launchActive() } }); });
 app.post('/api/admin/settings', admin, A(async (req, res) => {
-  const r = Number(rb(req).rate), s = L.int(rb(req).ship);
-  if (!(r >= 0 && r <= 0.3) || !(s >= 0 && s <= 200)) throw bad('Taux entre 0 et 30 %, livraison entre 0 et 200 DH.');
-  setSetting('rate', Math.round(r * 1000) / 1000); setSetting('ship', s);
+  const b = rb(req), r = Number(b.rate), sh = L.int(b.ship);
+  if (!(r >= 0 && r <= 0.3) || !(sh >= 0 && sh <= 200)) throw bad('Taux entre 0 et 30 %, livraison entre 0 et 200 DH.');
+  let lo = null;
+  if (b.launch && typeof b.launch === 'object') {
+    const on = b.launch.on === true, lr = Number(b.launch.rate), st = Number(b.launch.start), en = Number(b.launch.end);
+    if (on) {
+      if (!(lr >= 0 && lr <= 0.3)) throw bad('Taux de lancement entre 0 et 30 %.');
+      if (!(st > 0 && en > st)) throw bad('Choisissez une période : la date de fin doit suivre la date de début.');
+    }
+    lo = { on, lr: Number.isFinite(lr) ? lr : 0, st: Number.isFinite(st) ? st : 0, en: Number.isFinite(en) ? en : 0 };
+  }
+  setSetting('rate', Math.round(r * 1000) / 1000); setSetting('ship', sh);
+  if (lo) { setSetting('launch_on', lo.on ? '1' : '0'); setSetting('launch_rate', Math.round(lo.lr * 1000) / 1000); setSetting('launch_start', lo.st); setSetting('launch_end', lo.en); }
   res.json({ ok: true });
 }));
 app.get('/api/admin/contacts', admin, (req, res) => res.json({ contacts: all('SELECT * FROM contacts ORDER BY done, ts DESC LIMIT 300').map((c) => ({ ...c, done: !!c.done })) }));
@@ -665,6 +694,7 @@ app.get('/api/admin/export/orders.csv', admin, (req, res) => {
   const lines = rows.map((o) => [code(o.id), new Date(o.created).toISOString(), o.item_title, o.buyer_name, o.seller_name, o.price, o.ship, o.total, o.rate, o.commission, o.net, SH.ORDER_LBL[o.status], SH.PAY_LBL[o.payout], o.payout_ref, o.ship_city].map(L.csvCell).join(','));
   res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="commandes-thrifty.csv"' }).send('﻿' + [head.map(L.csvCell).join(','), ...lines].join('\n'));
 });
+require('./features').mount({ app, A, get, all, run, tx, L, SH, HttpError, bad, needUser, needAdmin, notify, notifyAdmins, itemsOut, ITEM_SELECT, photosFor, idParam, money, rate, shipFee, evt, code, dh, base, page, buildItemFilter, sellerStats, publicUser, orderOut, ORDER_SELECT, payments, now, rb, authLimit, contactLimit });
 app.use('/api', (req, res) => res.status(404).json({ error: 'not_found', message: 'Introuvable.' }));
 
 /* ---------- pages (SPA + SEO) ---------- */
@@ -683,6 +713,7 @@ app.get('/article/:id', (req, res) => {
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nDisallow: /api/\nDisallow: /admin\nDisallow: /commande\nDisallow: /paiement\nSitemap: ${base(req)}/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => {
   const b = base(req), urls = ['/', '/femmes', '/hommes', '/enfants', '/catalogue', '/promos', '/aide', '/cgu', '/confidentialite', '/mentions-legales'].map((p) => `<url><loc>${b}${p}</loc></url>`);
+  all("SELECT slug FROM collections WHERE active=1").forEach((c) => urls.push(`<url><loc>${b}/drops/${c.slug}</loc></url>`));
   all("SELECT i.id,i.updated FROM items i JOIN users u ON u.id=i.seller_id WHERE i.status='published' AND u.banned=0 ORDER BY i.created DESC LIMIT 5000").forEach((r) => urls.push(`<url><loc>${b}/article/${r.id}</loc><lastmod>${new Date(r.updated).toISOString().slice(0, 10)}</lastmod></url>`));
   res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls.join('')}</urlset>`);
 });
@@ -712,7 +743,7 @@ async function bootstrapAdmin() {
 function sweep() {
   run('DELETE FROM sessions WHERE expires<?', now());
   run('DELETE FROM resets WHERE expires<?', now());
-  const old = all('SELECT file FROM uploads WHERE ts<? AND file NOT IN (SELECT file FROM item_photos) AND file NOT IN (SELECT item_photo FROM orders WHERE item_photo IS NOT NULL)', now() - 864e5);
+  const old = all('SELECT file FROM uploads WHERE ts<? AND file NOT IN (SELECT file FROM item_photos) AND file NOT IN (SELECT item_photo FROM orders WHERE item_photo IS NOT NULL) AND file NOT IN (SELECT cover FROM collections WHERE LENGTH(cover)>0)', now() - 864e5);
   old.forEach((r) => { try { fs.unlinkSync(path.join(UPLOAD_DIR, r.file)); } catch { /* ignore */ } run('DELETE FROM uploads WHERE file=?', r.file); });
 }
 async function start() {

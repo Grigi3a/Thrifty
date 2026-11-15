@@ -23,7 +23,37 @@
     return s;
   }
   const packFor = (c) => ({ Manteaux: 'Grand', Chaussures: 'Grand', 'Tee-shirts': 'Petit', Accessoires: 'Petit' }[c] || 'Moyen');
-  const ORDER_LBL = { to_ship: 'À expédier', shipping: 'En cours de livraison', delivered: 'Livré · à vérifier', confirmed: 'Réception confirmée', issue: 'Problème signalé', refunded: 'Remboursée', cancelled: 'Annulée' };
+  const ORDER_LBL = { to_ship: 'À expédier', shipping: 'Expédiée (déclarée par le vendeur)', delivered: 'Livraison enregistrée · à vérifier', confirmed: 'Réception confirmée', issue: 'Problème signalé', refunded: 'Remboursée', cancelled: 'Annulée' };
   const PAY_LBL = { pending: 'En attente', due: 'À verser', paid: 'Versé', suspended: 'Suspendu', cancelled: 'Annulé' };
-  return { UNIV, CATS, catsFor, COND, COLORS, CITIES, PACKS, REASONS, sizesFor, allSizes, packFor, ORDER_LBL, PAY_LBL };
+  const ZONES = { rabat: { label: 'Rabat · Salé · Témara', cities: ['Rabat', 'Salé', 'Témara'] } };
+  const FITS = { petit: 'Taille petit', normal: 'Taille normalement', grand: 'Taille grand' };
+  const MEAS = {
+    haut: [
+      { k: 'poitrine', label: 'Largeur poitrine (à plat)', help: "Posez le vêtement bien à plat, fermé. Mesurez d'une aisselle à l'autre, bord à bord, sous les manches." },
+      { k: 'longueur', label: 'Longueur', help: "Du point le plus haut de l'épaule, près du col, jusqu'à l'ourlet du bas." },
+      { k: 'manche', label: 'Longueur de manche', help: "De la couture d'épaule jusqu'au bout de la manche." }
+    ],
+    robe: [
+      { k: 'poitrine', label: 'Largeur poitrine (à plat)', help: "Robe à plat, mesurez d'une aisselle à l'autre, bord à bord." },
+      { k: 'taille', label: 'Largeur taille (à plat)', help: 'Robe à plat, mesurez à l’endroit le plus étroit du buste, bord à bord.' },
+      { k: 'longueur', label: 'Longueur', help: "Du point le plus haut de l'épaule jusqu'à l'ourlet." }
+    ],
+    pantalon: [
+      { k: 'taille', label: 'Largeur taille (à plat)', help: 'Pantalon fermé et posé à plat : mesurez la ceinture d’un bord à l’autre.' },
+      { k: 'entrejambe', label: 'Entrejambe', help: "De la couture d'entrejambe jusqu'au bas de la jambe, le long de l'intérieur." },
+      { k: 'longueur', label: 'Longueur totale', help: "Du haut de la ceinture jusqu'au bas de la jambe." }
+    ],
+    chaussure: [
+      { k: 'semelle', label: 'Longueur intérieure', help: "À l'intérieur, du fond du talon jusqu'au bout, sur la semelle." }
+    ],
+    accessoire: [
+      { k: 'largeur', label: 'Largeur', help: 'Le point le plus large, objet posé à plat.' },
+      { k: 'hauteur', label: 'Hauteur', help: 'Du point le plus bas au point le plus haut.' }
+    ]
+  };
+  const MEAS_GROUP = { Chemises: 'haut', 'Tee-shirts': 'haut', 'Pulls et gilets': 'haut', 'Vestes et blazers': 'haut', Manteaux: 'haut', Robes: 'robe', Pantalons: 'pantalon', Chaussures: 'chaussure', Accessoires: 'accessoire' };
+  const measuresFor = (cat) => MEAS[MEAS_GROUP[cat]] || [];
+  const measureGroup = (cat) => MEAS_GROUP[cat] || '';
+  const FLAT_NOTE = "Les mesures sont prises vêtement posé à plat, de bord à bord, et saisies par le vendeur. Elles ne sont pas des tours : pour un vêtement non extensible, le tour est environ 2 fois la largeur à plat.";
+  return { ZONES, FITS, MEAS, measuresFor, measureGroup, FLAT_NOTE, UNIV, CATS, catsFor, COND, COLORS, CITIES, PACKS, REASONS, sizesFor, allSizes, packFor, ORDER_LBL, PAY_LBL };
 });

@@ -5,7 +5,7 @@
   const fld = (id, label, inner, hint) => `<div class="field"><label for="${id}">${label}</label>${inner}${hint ? `<span class="hint">${hint}</span>` : ''}</div>`;
 
   /* ---------- Administration ---------- */
-  const TABS = [['', 'Résumé'], ['commandes', 'Commandes'], ['dossiers', 'Dossiers'], ['annonces', 'Annonces'], ['membres', 'Membres'], ['messages', 'Messages'], ['reglages', 'Réglages']];
+  const TABS = [['', 'Résumé'], ['commandes', 'Commandes'], ['dossiers', 'Dossiers'], ['annonces', 'Annonces'], ['membres', 'Membres'], ['drops', 'Drops'], ['signalements', 'Signalements'], ['messages', 'Messages'], ['reglages', 'Réglages']];
   const tbl = (head, rows, empty) => `<div class="twrap"><table><thead><tr>${head.map((h) => `<th${h.startsWith('>') ? ' class="r"' : ''}>${esc(h.replace(/^>/, ''))}</th>`).join('')}</tr></thead><tbody>${rows.join('') || `<tr><td colspan="${head.length}" class="muted">${esc(empty || DJ.empty)}</td></tr>`}</tbody></table></div>`;
   T.route(/^\/admin(?:\/([a-z]+))?$/, async ([tab = '']) => {
     T.title('Administration');
@@ -33,9 +33,21 @@
     } else if (tab === 'messages') {
       const { contacts } = await T.get('/admin/contacts');
       body = contacts.length ? `<div class="stack">${contacts.map((c) => `<div class="panel"><div class="between"><b>${esc(c.topic)}</b><span class="muted small">${T.dateFr(c.ts)}</span></div><p class="small muted">${esc(c.name)} · ${esc(c.email)}</p><p style="white-space:pre-line;margin:8px 0">${esc(c.text)}</p>${c.done ? '<span class="pill ok">Traité</span>' : `<button class="btn btn-sm btn-line" data-act="adone" data-id="${c.id}">Marquer comme traité</button>`}</div>`).join('')}</div>` : T.emptyBox(DJ.empty, 'Aucun message.');
+    } else if (tab === 'drops') {
+      const { collections } = await T.get('/admin/collections');
+      body = `<div class="between" style="margin-bottom:14px"><span class="muted">${collections.length} collection${collections.length > 1 ? 's' : ''} · une collection sans pièce disponible reste invisible</span><button class="btn btn-fill btn-sm" data-act="dropedit" data-id="0">Nouvelle collection</button></div>` + (collections.length ? `<div class="stack">${collections.map((c) => `<div class="panel"><div class="between"><h3>${esc(c.title)}</h3><span class="pill ${c.active ? 'ok' : ''}">${c.active ? 'Active' : 'Masquée'}</span></div><p class="muted small">${esc(c.desc)}</p><p class="small">${c.items.length} pièce${c.items.length > 1 ? 's' : ''} · ordre ${c.position} · <a class="link" href="/drops/${esc(c.slug)}">/drops/${esc(c.slug)}</a></p><div class="row" style="margin-top:10px"><button class="btn btn-sm btn-line" data-act="dropedit" data-id="${c.id}">Modifier</button><button class="btn btn-sm btn-line" data-act="dropdel" data-id="${c.id}">Supprimer</button></div></div>`).join('')}</div>` : T.emptyBox(DJ.empty, 'Aucune collection pour le moment.'));
+    } else if (tab === 'signalements') {
+      const { reports } = await T.get('/admin/reports'), TL = { item: 'Annonce', user: 'Profil', review: 'Avis' };
+      body = reports.length ? `<div class="stack">${reports.map((r) => `<div class="panel"><div class="between"><b>${TL[r.type]} · ${esc(r.reason)}</b><span class="pill ${r.status === 'open' ? 'warn' : ''}">${r.status === 'open' ? 'À traiter' : r.status === 'resolved' ? 'Traité' : 'Classé'}</span></div><p class="small muted">Par ${esc(r.reporter)} · ${T.dateFr(r.ts)}</p><p>${esc(r.label)}</p>${r.note ? `<p class="small" style="white-space:pre-line">${esc(r.note)}</p>` : ''}${r.status === 'open' ? `<div class="row" style="margin-top:10px">${r.type === 'item' ? `<a class="btn btn-sm btn-line" href="/article/${r.targetId}">Voir</a><button class="btn btn-sm btn-fill" data-act="arep" data-a="hide" data-id="${r.id}">Masquer l'annonce</button>` : ''}${r.type === 'user' ? `<a class="btn btn-sm btn-line" href="/vendeur/${r.targetId}">Voir</a><button class="btn btn-sm btn-fill" data-act="arep" data-a="ban" data-id="${r.id}">Suspendre</button>` : ''}${r.type === 'review' ? `<button class="btn btn-sm btn-fill" data-act="arep" data-a="delete" data-id="${r.id}">Supprimer l'avis</button>` : ''}<button class="btn btn-sm btn-line" data-act="arep" data-a="dismiss" data-id="${r.id}">Classer sans suite</button></div>` : ''}</div>`).join('')}</div>` : T.emptyBox(DJ.empty, 'Aucun signalement.');
     } else if (tab === 'reglages') {
       const s = await T.get('/admin/settings');
-      body = `<form class="panel stack" style="max-width:520px" data-form="settings"><h3>Tarifs</h3>${fld('rate', 'Commission (%)', `<input class="in" id="rate" name="rate" type="number" min="0" max="30" step="0.5" value="${Math.round(s.rate * 1000) / 10}">`, 'Appliquée aux nouvelles commandes. Les commandes déjà passées gardent leur taux.')}${fld('ship', 'Frais de livraison (DH)', `<input class="in" id="ship" name="ship" type="number" min="0" max="200" value="${s.ship}">`, 'Payés par l\'acheteur, hors commission.')}<button class="btn btn-fill" type="submit">Enregistrer</button></form>`;
+      const L = s.launch, loc = (t) => { if (!t) return ''; const d = new Date(t - new Date(t).getTimezoneOffset() * 60000); return d.toISOString().slice(0, 16); };
+      body = `<form class="panel stack" style="max-width:560px" data-form="settings"><h3>Tarifs</h3>${fld('rate', 'Commission (%)', `<input class="in" id="rate" name="rate" type="number" min="0" max="30" step="0.5" value="${Math.round(s.rate * 1000) / 10}">`, 'Appliquée aux nouvelles commandes. Les commandes déjà passées gardent leur taux. Rien ne change sans votre enregistrement.')}${fld('ship', 'Frais de livraison (DH)', `<input class="in" id="ship" name="ship" type="number" min="0" max="200" value="${s.ship}">`, 'Payés par l\'acheteur, hors commission.')}
+        <h3 style="margin-top:8px">Offre de lancement</h3><p class="small muted">Désactivée par défaut. Une fois activée, elle remplace la commission pendant la période choisie, puis le tarif normal revient automatiquement.${L.active ? ' <b>En cours actuellement.</b>' : ''}</p>
+        <label class="ck"><input type="checkbox" name="lon" id="lon"${L.on ? ' checked' : ''}> Activer l'offre de lancement</label>
+        ${fld('lrate', 'Commission pendant l\'offre (%)', `<input class="in" id="lrate" name="lrate" type="number" min="0" max="30" step="0.5" value="${Math.round(L.rate * 1000) / 10}">`)}
+        <div class="form-grid">${fld('lstart', 'Début', `<input class="in" id="lstart" name="lstart" type="datetime-local" value="${loc(L.start)}">`)}${fld('lend', 'Fin', `<input class="in" id="lend" name="lend" type="datetime-local" value="${loc(L.end)}">`)}</div>
+        <button class="btn btn-fill" type="submit">Enregistrer</button></form>`;
     } else throw Object.assign(new Error('Page introuvable.'), { status: 404 });
     return `<div class="wrap sp"><h1 class="h2" style="margin-bottom:18px">Administration</h1><nav class="tabs" aria-label="Administration">${TABS.map(([k, l]) => `<a href="/admin${k ? '/' + k : ''}"${k === tab ? ' aria-current="page"' : ''}>${l}</a>`).join('')}</nav>${body}</div>`;
   }, { admin: true });
@@ -50,14 +62,19 @@
     const r = await T.modal('<h3>Verser le vendeur</h3><p class="muted">Effectuez le virement puis notez la référence (facultatif).</p><form class="stack"><div class="field"><label for="rf">Référence du virement</label><input class="in" id="rf" name="reference" maxlength="80"></div><div class="row"><button class="btn btn-fill" type="submit">Versement effectué</button><button class="btn btn-line" type="button" data-close="no">Annuler</button></div></form>');
     if (r && (await T.run(() => T.post(`/admin/orders/${el.dataset.id}/pay`, { reference: r.reference }), 'Versement enregistré.'))) T.render();
   };
-  T.forms.settings = async (f) => { const d = T.formData(f); if (await T.run(() => T.post('/admin/settings', { rate: Number(d.rate) / 100, ship: Number(d.ship) }), 'Réglages enregistrés.')) { const c = await T.get('/config'); Object.assign(T.cfg, c); } };
+  T.forms.settings = async (f) => {
+    const d = T.formData(f), t = (v) => (v ? new Date(v).getTime() : 0);
+    const body = { rate: Number(d.rate) / 100, ship: Number(d.ship), launch: { on: !!d.lon, rate: Number(d.lrate || 0) / 100, start: t(d.lstart), end: t(d.lend) } };
+    if (await T.run(() => T.post('/admin/settings', body), 'Réglages enregistrés.')) { Object.assign(T.cfg, await T.get('/config')); T.render(); }
+  };
+  T.acts.arep = async (el) => { const a = el.dataset.a; if ((a === 'ban' || a === 'delete') && !(await T.confirm(a === 'ban' ? 'Suspendre ce profil ?' : 'Supprimer cet avis ?', 'Cette action est appliquée immédiatement.', 'Confirmer', true))) return; if (await T.run(() => T.post(`/admin/reports/${el.dataset.id}/${a}`), DJ.done + ' !')) T.render(); };
 
   /* ---------- Aide ---------- */
   const FAQ = [
     ['Comment acheter ?', 'Trouvez un article, cliquez sur « Acheter » (ou négociez avec « ' + DJ.offer + ' »), indiquez votre adresse. Vous payez le livreur à la réception.'],
     ['Quand le vendeur est-il payé ?', 'Après votre confirmation de réception. Tant que vous n\'avez pas confirmé, le versement n\'est pas déclenché.'],
     ['Et si l\'article ne correspond pas ?', 'Signalez un problème depuis votre commande avant de confirmer. Le versement est suspendu et notre équipe examine le dossier ; un remboursement est possible.'],
-    ['Combien coûte la vente ?', 'Poster est gratuit. Une commission de ' + Math.round(T.cfg.rate * 100) + ' % du prix de l\'article est retenue uniquement en cas de vente. La livraison est payée par l\'acheteur.'],
+    ['Combien coûte la vente ?', 'Poster est gratuit. Une commission de ' + T.pct(T.cfg.rate) + ' du prix de l\'article est retenue uniquement en cas de vente. La livraison est payée par l\'acheteur.'],
     ['Comment expédier ?', 'Une fois la vente faite, emballez l\'article, remettez-le au transporteur puis cliquez sur « Marquer comme expédiée » dans votre commande.'],
     ['Puis-je négocier ?', 'Oui. Proposez un prix plus bas ; le vendeur accepte, refuse ou répond. Le prix accepté est repris automatiquement au paiement.']
   ];
@@ -75,10 +92,11 @@
   T.route(/^\/compte$/, () => {
     T.title('Mon compte'); const u = T.user;
     return `<div class="wrap sp"><h1 class="h2" style="margin-bottom:20px">Mon compte</h1><div class="two eq"><form class="panel stack" data-form="profile"><h2>Mes informations</h2>${fld('name', 'Nom', `<input class="in" id="name" name="name" value="${esc(u.name)}" maxlength="40" required>`)}${fld('email', 'E-mail', `<input class="in" id="email" value="${esc(u.email)}" disabled>`)}
-      ${fld('city', 'Ville', `<select class="in" id="city" name="city">${T.opts(SH.CITIES, u.city)}</select>`)}${fld('phone', 'Téléphone', `<input class="in" id="phone" name="phone" type="tel" value="${esc(u.phone || '')}">`)}<button class="btn btn-fill" type="submit">Enregistrer</button></form>
+      ${fld('city', 'Ville', `<select class="in" id="city" name="city">${T.opts(SH.CITIES, u.city)}</select>`)}${fld('phone', 'Téléphone', `<input class="in" id="phone" name="phone" type="tel" value="${esc(u.phone || '')}">`)}${fld('bio', 'Présentation (facultatif)', `<textarea class="in" id="bio" name="bio" maxlength="300" style="min-height:90px" placeholder="Quelques mots sur votre dressing">${esc(u.bio || '')}</textarea>`, 'Visible sur votre profil vendeur.')}<p class="small">${u.emailVerified ? '<span class="badge-v">E-mail confirmé</span>' : (T.cfg.mailEnabled ? '<button class="btn btn-line btn-sm" type="button" data-act="verifymail">Confirmer mon e-mail</button>' : '<span class="muted">La confirmation d\'e-mail sera disponible quand l\'envoi d\'e-mails sera configuré.</span>')}</p><button class="btn btn-fill" type="submit">Enregistrer</button></form>
       <div class="stack"><form class="panel stack" data-form="password"><h2>Mot de passe</h2>${fld('current', 'Actuel', '<input class="in" id="current" name="current" type="password" autocomplete="current-password" required>')}${fld('next', 'Nouveau (8 caractères min.)', '<input class="in" id="next" name="next" type="password" autocomplete="new-password" minlength="8" required>')}<button class="btn btn-line" type="submit">Changer</button></form>
       <div class="panel stack"><h2>Zone sensible</h2><p class="small muted">Supprimer votre compte retire vos annonces. Impossible tant que des commandes sont en cours.</p><button class="btn btn-danger" data-act="delacc">Supprimer mon compte</button></div></div></div></div>`;
   }, { auth: true });
+  T.acts.verifymail = async () => { if (await T.run(() => T.post('/me/verify-email'), 'E-mail envoyé : ouvrez le lien reçu.')) { /* en attente */ } };
   T.forms.profile = async (f) => { const r = await T.run(() => T.api('PATCH', '/me', T.formData(f)), 'Informations enregistrées.'); if (r) { T.user = r.user; T.chrome(); } };
   T.forms.password = async (f) => { if (await T.run(() => T.post('/me/password', T.formData(f)), 'Mot de passe modifié.')) f.reset(); };
   T.acts.delacc = async () => {

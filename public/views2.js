@@ -141,8 +141,8 @@
       ${o.status === 'delivered' && buyer ? '<p class="alert info" style="margin-bottom:16px">Votre colis est livré ? Vérifiez-le, puis confirmez. Le vendeur sera payé après votre confirmation.</p>' : ''}
       <div class="two eq"><div class="panel"><div class="mini"><span class="th">${o.photo ? `<img src="${esc(o.photo)}" alt="">` : ''}</span><span><a class="link" href="/article/${o.itemId || ''}"><b>${esc(o.title)}</b></a><br><span class="small muted">${esc(o.brand)} · ${esc(o.size)}</span><br><span class="small muted">${buyer ? 'Vendeur : ' + esc(o.seller.name) : 'Acheteur : ' + esc(o.buyer.name)}</span></span></div>
       <dl class="lines"><div><dt>Prix de l'article</dt><dd>${dh(o.price)}</dd></div>${seller ? `<div><dt>Commission (${Math.round(o.rate * 1000) / 10} %)</dt><dd>− ${dh(o.commission)}</dd></div><div class="big"><dt>Vous recevez</dt><dd>${dh(o.net)}</dd></div><div><dt>Versement</dt><dd>${T.payPill(o.payout)}</dd></div>` : `<div><dt>Livraison</dt><dd>${dh(o.ship)}</dd></div><div class="big"><dt>Total à payer</dt><dd>${dh(o.total)}</dd></div><div><dt>Paiement</dt><dd>À la livraison</dd></div>`}</dl></div>
-      <div class="panel"><h3>Livraison</h3><p style="margin-top:8px">${esc(o.shipName || '')}<br>${esc(o.address || '')}<br>${esc(o.city)}<br>${esc(o.phone || '')}</p><p class="small muted" style="margin-top:8px">Colis ${esc(o.pack)}${o.tracking ? ' · suivi : ' + esc(o.tracking) : ''}</p>
-      ${seller && o.status === 'to_ship' ? '<p class="alert warn small" style="margin-top:12px">Préparez le colis et remettez-le au transporteur. Puis indiquez-le ci-dessous.</p>' : ''}</div></div>
+      <div class="panel"><h3>Livraison</h3>${o.bundleTitle ? `<p class="small" style="margin-top:6px"><b>Lot « ${esc(o.bundleTitle)} »</b> : un seul colis, ${1 + (o.siblings || []).length} pièces${(o.siblings || []).length ? ' (aussi : ' + o.siblings.map((x) => esc(x.title)).join(', ') + ')' : ''}.</p>` : ''}<p style="margin-top:8px">${esc(o.shipName || '')}<br>${esc(o.address || '')}<br>${esc(o.city)}<br>${esc(o.phone || '')}</p><p class="small muted" style="margin-top:8px">Colis ${esc(o.pack)}${o.tracking ? ' · n° de suivi indiqué par le vendeur (non vérifié) : ' + esc(o.tracking) : ''}</p>
+      ${seller && o.status === 'to_ship' ? '<p class="alert warn small" style="margin-top:12px">Préparez le colis et remettez-le au transporteur. Puis indiquez-le ci-dessous : l\'étape « expédiée » est déclarée par vous, Thrifty n\'a pas de suivi automatique du transporteur.</p>' : ''}</div></div>
       ${btns.length ? `<div class="row" style="margin-top:20px">${btns.join('')}</div>` : ''}
       ${buyer && o.status === 'confirmed' && !o.review ? `<form class="panel stack" style="margin-top:20px" data-form="review" data-id="${o.id}"><h3>${esc(DJ.thanks)} ! Laissez un avis</h3><div class="row" role="radiogroup" aria-label="Note">${[1, 2, 3, 4, 5].map((n) => `<label class="chip-f" style="cursor:pointer"><input type="radio" name="rating" value="${n}" ${n === 5 ? 'checked' : ''} style="accent-color:var(--cobalt)"> ${n} ★</label>`).join('')}</div><textarea class="in" name="text" maxlength="500" placeholder="Article conforme ? Vendeur sérieux ?"></textarea><button class="btn btn-fill" type="submit">Publier l'avis</button></form>` : ''}
       ${o.review ? `<div class="panel" style="margin-top:20px"><b>Avis</b> ${T.stars(o.review.rating)}<p>${esc(o.review.text)}</p></div>` : ''}
@@ -162,6 +162,7 @@
   T.forms.review = async (f) => { const d = T.formData(f); if (await T.run(() => T.post(`/orders/${f.dataset.id}/review`, { rating: Number(d.rating), text: d.text }), DJ.thanks + ' !')) T.render(); };
 
   /* ---------- Vendre / modifier ---------- */
+  T.toJpeg = (f) => toJpeg(f);
   async function toJpeg(file) {
     const url = URL.createObjectURL(file);
     try {
@@ -175,7 +176,7 @@
   T.route(/^\/vendre(?:\/(\d+))?$/, async ([id]) => {
     let it = null; if (id) { it = (await T.get('/items/' + id)).item; if (it.seller.id !== T.user.id) throw Object.assign(new Error('Annonce introuvable.'), { status: 404 }); }
     T.title(it ? 'Modifier l\'annonce' : 'Mettre en vente');
-    const v = it || { univ: 'femmes', cat: '', title: '', brand: '', size: '', color: '', cond: '', defects: '', desc: '', price: '', city: T.user.city, photos: [] };
+    const v = it || { fit: '', measures: [], univ: 'femmes', cat: '', title: '', brand: '', size: '', color: '', cond: '', defects: '', desc: '', price: '', city: T.user.city, photos: [] };
     const st = { photos: v.photos.map((p) => p.split('/').pop()), busy: 0 };
     const noBrand = v.brand === 'Sans marque', noDef = v.defects === 'Aucun défaut constaté';
     const html = `<div class="wrap sp"><div class="between" style="margin-bottom:6px"><h1 class="h2">${it ? 'Modifier l\'annonce' : esc(DJ.sell)}</h1></div><p class="muted" style="margin-bottom:24px">${it ? '' : 'Des photos nettes, une description honnête : c\'est ce qui vend vite.'}</p>
@@ -190,9 +191,12 @@
         ${fld('brand', 'Marque', inp('brand', 'text', `maxlength="50" value="${noBrand ? '' : esc(v.brand)}"${noBrand ? ' disabled' : ''}`))}<label class="ck" style="align-self:end"><input type="checkbox" name="noBrand" id="noBrand"${noBrand ? ' checked' : ''}> Sans marque</label>
         ${fld('cond', 'État', `<select class="in" id="cond" name="cond">${T.opts(SH.COND, v.cond, 'Choisir…')}</select>`)}${fld('city', 'Ville de départ', `<select class="in" id="city" name="city">${T.opts(SH.CITIES, v.city, 'Choisir…')}</select>`)}
         <div class="full">${fld('defects', 'Défauts éventuels', `<textarea class="in" id="defects" name="defects" maxlength="500" style="min-height:70px"${noDef ? ' disabled' : ''}>${noDef ? '' : esc(v.defects)}</textarea>`)}<label class="ck"><input type="checkbox" name="noDefect" id="noDefect"${noDef ? ' checked' : ''}> Aucun défaut constaté</label></div></div></div>
+      <div class="panel stack" id="measpanel" hidden><h2>Taille et mesures <span class="muted small">(facultatif)</span></h2>
+        ${fld('fit', 'Coupe constatée', `<select class="in" id="fit" name="fit"><option value="">Non précisé</option>${Object.entries(SH.FITS).map(([k, l]) => `<option value="${k}"${k === v.fit ? ' selected' : ''}>${l}</option>`).join('')}</select>`, 'Votre ressenti, pas une garantie de taille.')}
+        <div class="form-grid" id="meas"></div><div id="mhelp"></div></div>
       <div class="panel stack"><h2>Prix</h2>${fld('price', 'Prix (DH)', inp('price', 'number', `min="1" max="100000" step="1" inputmode="numeric" value="${v.price || ''}"`))}<p class="alert info small" id="net"></p>
         <label class="ck"><input type="checkbox" name="decl" id="decl"${it && it.status === 'published' ? ' checked' : ''}> <span class="small">Je certifie que l'article est conforme aux photos et à la description, et que je suis autorisé(e) à le vendre.</span></label></div></div>
-      <aside class="panel stack" style="position:sticky;top:150px"><h2>Publier</h2><p class="small muted">Commission de ${Math.round(T.cfg.rate * 100)} % retenue uniquement quand l'article est vendu. La livraison (${dh(T.cfg.ship)}) est payée par l'acheteur.</p>
+      <aside class="panel stack" style="position:sticky;top:150px"><h2>Publier</h2><p class="small muted">Commission de ${T.pct(T.cfg.rate)} retenue uniquement quand l'article est vendu${T.cfg.launch ? ' (offre de lancement en cours)' : ''}. La livraison (${dh(T.cfg.ship)}) est payée par l'acheteur.</p>
         <button class="btn btn-fill btn-block" type="submit" data-publish="1">${it && it.status === 'published' ? 'Enregistrer' : 'Publier l\'annonce'}</button>${!it || it.status === 'draft' ? '<button class="btn btn-line btn-block" type="submit" data-publish="0">Enregistrer le brouillon</button>' : ''}</aside></form></div>`;
     return [html, (root) => {
       const $f = (n) => $('#' + n, root), selU = $f('univ'), selC = $f('cat'), selS = $f('size');
@@ -200,7 +204,15 @@
       const fillSizes = () => { const cur = selS.value || v.size; selS.innerHTML = selC.value ? T.opts(SH.sizesFor(selU.value, selC.value), cur, 'Choisir…') : '<option value="">Choisissez d\'abord la catégorie</option>'; };
       selU.addEventListener('change', () => { selC.value = ''; selS.value = ''; fillCats(); }); selC.addEventListener('change', () => { selS.value = ''; fillSizes(); }); fillCats();
       $f('noBrand').addEventListener('change', (e) => { $f('brand').disabled = e.target.checked; }); $f('noDefect').addEventListener('change', (e) => { $f('defects').disabled = e.target.checked; });
-      const net = () => { const p = Number($f('price').value); $f('net').textContent = p > 0 ? `Vous recevrez ${dh(p - Math.round(p * T.cfg.rate * 100) / 100)} après la vente (commission ${dh(Math.round(p * T.cfg.rate * 100) / 100)}).` : 'Fixez un prix : nous calculons ce que vous recevez.'; };
+      const mv = {}; (v.measures || []).forEach((x) => { mv[x.k] = x.value; });
+      const paintMeas = () => {
+        const defs = SH.measuresFor(selC.value), P = $f('measpanel'); P.hidden = !defs.length; if (!defs.length) return;
+        $f('meas').innerHTML = defs.map((d) => `<div class="field"><label for="m_${d.k}">${esc(d.label)}</label><input class="in" id="m_${d.k}" name="m_${d.k}" type="number" inputmode="decimal" min="1" max="300" step="0.5" value="${mv[d.k] != null ? mv[d.k] : ''}" placeholder="cm"></div>`).join('');
+        $f('mhelp').innerHTML = `<details class="help"><summary>Comment mesurer ?</summary><div><p class="small">${esc(SH.FLAT_NOTE)}</p>${defs.map((d) => `<p class="small"><b>${esc(d.label)}.</b> ${esc(d.help)}</p>`).join('')}<div class="mdiag">${defs.map((d) => T.mdiagram(SH.measureGroup(selC.value), d.k, d.label)).join('')}</div></div></details>`;
+        $$('#meas input', root).forEach((i) => i.addEventListener('input', () => { mv[i.name.slice(2)] = i.value; }));
+      };
+      selC.addEventListener('change', paintMeas); paintMeas();
+      const net = () => { const p = Number($f('price').value); $f('net').textContent = p > 0 ? (() => { const f = T.fees(p); return `Prix ${dh(p)} − commission ${T.pct(f.rate)} (${dh(f.commission)}) = vous recevez ${dh(f.net)}.`; })() : 'Fixez un prix : nous calculons ce que vous recevez.'; };
       $f('price').addEventListener('input', net); net();
       const paint = () => { $f('phs').innerHTML = st.photos.map((f, i) => `<div class="ph${i === 0 ? ' main' : ''}"><img src="/uploads/${esc(f)}" alt="Photo ${i + 1}">${i === 0 ? '<span class="mk">Principale</span>' : ''}<div class="acts">${i ? `<button type="button" data-act="pmain" data-i="${i}">★ Principale</button>` : '<span></span>'}<button type="button" data-act="pdel" data-i="${i}" aria-label="Supprimer">✕</button></div></div>`).join('') + (st.busy ? `<div class="ph"><span class="small muted" style="position:absolute;inset:0;display:grid;place-items:center">Envoi…</span></div>`.repeat(st.busy) : ''); };
       paint();
@@ -215,7 +227,7 @@
       T.forms.sell = async (f) => {
         T.fieldErr(f, ''); const d = T.formData(f), publish = f.dataset.publish !== '0';
         if (st.busy) return T.fieldErr(f, 'Patientez, des photos sont en cours d\'envoi.');
-        const body = { publish, univ: d.univ, cat: d.cat, title: d.title, desc: d.desc, brand: d.brand, noBrand: d.noBrand, size: d.size, color: d.color, cond: d.cond, defects: d.defects, noDefect: d.noDefect, price: d.price, city: d.city, decl: d.decl, photos: st.photos };
+        const body = { publish, univ: d.univ, cat: d.cat, title: d.title, desc: d.desc, brand: d.brand, noBrand: d.noBrand, size: d.size, color: d.color, cond: d.cond, defects: d.defects, noDefect: d.noDefect, price: d.price, city: d.city, decl: d.decl, photos: st.photos, fit: d.fit, measures: Object.fromEntries(SH.measuresFor(d.cat).map((x) => [x.k, d['m_' + x.k]]).filter(([, val]) => val !== '' && val != null)) };
         try { const r = f.dataset.id ? await T.put('/items/' + f.dataset.id, body) : await T.post('/items', body); T.toast(r.status === 'published' ? `${DJ.congrats} ! Votre annonce est en ligne.` : 'Brouillon enregistré.'); T.go(r.status === 'published' ? '/article/' + r.id : '/dressing'); } catch (e) { T.fieldErr(f, e.errors && e.errors.length > 1 ? e.errors.join(' · ') : e.message); }
       };
     }];
