@@ -20,7 +20,7 @@
     <section class="wrap sp-s"><div class="univ">${tile('femmes', 'Femmes', 0)}${tile('hommes', 'Hommes', 1)}${tile('enfants', 'Enfants', 2)}</div></section>
     <section class="wrap sp-s rv"><div class="sec-head"><div class="eyebrow"><span class="bar"></span>Près de chez vous</div></div>
       <div class="zone-row"><a class="btn btn-fill btn-sm" href="/catalogue?zone=rabat">${esc(z.label)}</a>${['Casablanca', 'Fès', 'Marrakech', 'Tanger'].map((c) => `<a class="btn btn-line btn-sm" href="/catalogue?city=${encodeURIComponent(c)}">${c}</a>`).join('')}<a class="link small" href="/catalogue">Toutes les villes</a></div>
-      <p class="muted small" style="margin-top:10px">Vous choisissez la ville vous-même, nous n'utilisons pas votre position. Livraison par transporteur : ${dh(T.cfg.ship)} (délai communiqué par le transporteur, non garanti).</p></section>
+      <p class="muted small" style="margin-top:10px">Vous choisissez la ville vous-même, nous n'utilisons pas votre position. Livraison par transporteur : ${dh(T.cfg.ship)} (délai communiqué par le transporteur, non garanti).${T.cfg.hand ? ` À ${esc(T.cfg.hand.label)} : <b>remise en main propre sans frais de livraison</b>, protégée par un code de remise.` : ''}</p></section>
     ${drops}
     <section class="wrap sp-s rv"><div class="sec-head"><div class="eyebrow"><span class="bar"></span>Nouveautés</div><a class="link" href="/catalogue">Tout voir</a></div>
       ${items.length ? T.grid(items) : T.emptyBox(DJ.empty, 'Soyez la première personne à mettre une belle pièce en ligne.', `<a class="btn btn-fill" href="/vendre">${esc(DJ.sell)}</a>`)}</section>
@@ -122,12 +122,13 @@
   T.route(/^\/promos$/, catalogue(null, true));
 
   /* ---------- Article ---------- */
-  T.route(/^\/article\/(\d+)$/, async ([id]) => {
+  T.route(/^\/article\/(\d+)(?:-[a-z0-9-]*)?$/, async ([id]) => {
     const d = await T.get('/items/' + id), it = d.item, u = T.user, mine = u && u.id === it.seller.id, ss = d.sellerStats;
     if (u && !T.favsLoaded) await loadFavs();
     T.title(it.title + ' · ' + dh(it.price));
     const m = { price: it.price, ship: T.cfg.ship }, agreed = d.convo && d.convo.agreed && d.convo.agreed < it.price ? d.convo.agreed : null, pay = agreed || it.price;
-    const sold = it.status === 'sold', avail = it.status === 'published';
+    const sold = it.status === 'sold', avail = it.status === 'published', handOk = !!(T.cfg.hand && it.hand && avail);
+    if (/^\/article\/\d+$/.test(location.pathname) && it.slug) history.replaceState(history.state, '', T.itemPath(it) + location.search);
     const fav = T.favs.has(it.id);
     const photos = it.photos.length ? it.photos : [null];
     const html = `<div class="wrap"><nav class="crumbs" style="margin-top:20px" aria-label="Fil d'Ariane"><a href="/">Accueil</a><span>/</span><a href="/${it.univ}">${esc(SH.UNIV[it.univ])}</a><span>/</span><span>${esc(it.cat)}</span></nav>
@@ -135,7 +136,9 @@
       <div class="main-img" id="mainimg">${photos[0] ? `<img id="mainph" src="${esc(photos[0])}" alt="${esc(it.title)}">` : '<div class="art"></div>'}${sold ? '<div class="sold-ov">Vendu</div>' : ''}</div></div>
     <div><h1 class="ititle">${esc(it.title)}</h1>
       <div class="bigprice"><b>${dh(it.price)}</b>${it.oldPrice ? `<s>${dh(it.oldPrice)}</s><span class="pill blue">−${Math.round((1 - it.price / it.oldPrice) * 100)} %</span>` : ''}</div>
-      <div class="fees" style="margin-top:10px"><div><span>Prix de l'article</span><b>${dh(pay)}</b></div><div><span>Livraison (transporteur)</span><b>${dh(m.ship)}</b></div><div class="tot"><span>Total à payer</span><b>${dh(pay + m.ship)}</b></div><div class="muted small" style="display:block">${esc(T.cfg.paymentMethods.map((x) => x.label).join(', ') || '')}</div></div>
+      ${it.views || it.favCount ? `<div class="pop-stats small muted">${it.views ? `<span>👁 ${it.views} vue${it.views > 1 ? 's' : ''}</span>` : ''}${it.favCount ? `<span>♥ ${it.favCount} favori${it.favCount > 1 ? 's' : ''}</span>` : ''}</div>` : ''}
+      <div class="fees" style="margin-top:10px"><div><span>Prix de l'article</span><b>${dh(pay)}</b></div><div><span>Livraison (transporteur)</span><b>${dh(m.ship)}</b></div><div class="tot"><span>Total à payer</span><b>${dh(pay + m.ship)}</b></div><div class="muted small" style="display:block">${esc(T.cfg.paymentMethods.map((x) => x.label).join(', ') || '')}</div>
+      ${handOk ? `<div style="display:block;border-top:1px dashed rgba(127,127,127,.35);padding-top:8px;margin-top:6px"><span class="tag-l hand" style="position:static;display:inline-block">Main propre</span> <b>${dh(pay)}</b> <span class="small muted">· sans frais de livraison, à ${esc(T.cfg.hand.label)}</span></div>` : ''}</div>
       ${mine ? (() => { const f = T.fees(pay); return `<div class="fees" style="margin-top:8px"><div><span>Commission Thrifty (${T.pct(f.rate)})</span><b>−${dh(f.commission)}</b></div><div class="tot"><span>Vous recevez</span><b>${dh(f.net)}</b></div></div>`; })() : ''}
       ${agreed ? `<p class="alert ok" style="margin-top:12px">${esc(DJ.congrats)} ! Prix convenu avec le vendeur : <b>${dh(agreed)}</b></p>` : ''}
       ${it.fit ? `<p style="margin-top:10px"><span class="fitbadge">${esc(SH.FITS[it.fit] || '')}</span> <span class="muted small">(avis du vendeur)</span></p>` : ''}
@@ -149,9 +152,10 @@
         : `<a class="btn btn-fill btn-block" href="/paiement/${it.id}">Acheter · ${dh(pay + m.ship)} <span class="ar">→</span></a>
            <div class="row"><button class="btn btn-line grow" data-act="offer" data-id="${it.id}" data-price="${it.price}">${esc(DJ.offer)} · ${esc(DJ.offerFr)}</button><button class="btn btn-line grow" data-act="contact" data-id="${it.id}">Écrire au vendeur</button>
            <button class="btn btn-line" data-act="fav" data-id="${it.id}" aria-pressed="${fav}" aria-label="Favori">${T.ico('heart', 20)}</button></div>`}</div>
-      <a class="seller-card" href="/vendeur/${it.seller.id}"><span class="avatar">${esc(it.seller.name[0].toUpperCase())}</span><span class="grow"><b>${esc(it.seller.name)}</b><br><span class="small muted">${esc(it.seller.city || '')}${ss.reviews ? ' · ' + T.stars(ss.avg) + ' (' + ss.reviews + ')' : ' · pas encore d\'avis'} · ${ss.sales} vente${ss.sales > 1 ? 's' : ''}</span></span>${T.ico('arrow', 20)}</a>
+      <a class="seller-card" href="/vendeur/${it.seller.id}"><span class="avatar">${esc(it.seller.name[0].toUpperCase())}</span><span class="grow"><b>${esc(it.seller.name)}</b><br><span class="small muted">${esc(it.seller.city || '')}${ss.reviews ? ' · ' + T.stars(ss.avg) + ' (' + ss.reviews + ')' : ' · pas encore d\'avis'} · ${ss.sales} vente${ss.sales > 1 ? 's' : ''}${ss.respond ? '<br>⏱ ' + esc(ss.respond) : ''}</span></span>${T.ico('arrow', 20)}</a>
       <div class="note-box"><span>🔒</span><span>Vous réglez à la livraison. Vérifiez le colis, puis confirmez la réception : Thrifty ne verse le vendeur qu'après. En cas de problème, signalez-le depuis votre commande : l'équipe étudie chaque dossier.</span></div>
-      ${avail || mine ? `<div class="share-row" style="margin-top:14px"><button class="btn btn-line btn-sm" data-act="copylink" data-url="/article/${it.id}">Copier le lien</button><button class="btn btn-line btn-sm" data-act="nshare" data-url="/article/${it.id}" data-t="${esc(it.title)}">Partager</button><button class="btn btn-line btn-sm" data-act="story" data-id="${it.id}">Carte story</button></div>` : ''}
+      ${handOk ? '<div class="note-box"><span>🤝</span><span>Main propre : vous vous retrouvez dans un lieu public, vous vérifiez l\'article, vous payez en espèces, puis vous donnez votre code de remise au vendeur. Sans votre code, la vente n\'est pas conclue.</span></div>' : ''}
+      ${avail || mine ? `<div class="share-row" style="margin-top:14px"><button class="btn btn-line btn-sm" data-act="copylink" data-url="${T.itemPath(it)}">Copier le lien</button><button class="btn btn-line btn-sm" data-act="nshare" data-url="/article/${it.id}" data-t="${esc(it.title)}">Partager</button><button class="btn btn-line btn-sm" data-act="story" data-id="${it.id}">Carte story</button></div>` : ''}
       ${!mine && u ? `<p class="small" style="margin-top:14px"><button class="link" style="background:none;border-width:0 0 2px" data-act="report" data-type="item" data-id="${it.id}">Signaler cette annonce</button></p>` : ''}</div></div>
     ${d.similar.length ? `<section class="sp-s"><h2 class="h2" style="font-size:28px;margin-bottom:18px">Dans le même esprit</h2>${T.grid(d.similar)}</section>` : ''}</div>`;
     return [html, (root) => {

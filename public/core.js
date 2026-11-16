@@ -141,14 +141,16 @@
     const fav = T.favs.has(it.id), promo = it.oldPrice ? Math.round((1 - it.price / it.oldPrice) * 100) : 0;
     return `<li style="--i:${i || 0}"><article class="card"><a class="img" href="/article/${it.id}" aria-label="${esc(it.title)}">${it.photos[0] ? `<img loading="lazy" src="${esc(it.photos[0])}" alt="${esc(it.title)}" style="width:100%;height:100%;object-fit:cover;display:block">` : '<div class="art"></div>'}${it.status === 'sold' ? '<div class="sold-ov">Vendu</div>' : ''}</a>
       ${it.status === 'published' ? `<button class="heart" data-act="fav" data-id="${it.id}" aria-pressed="${fav}" aria-label="Ajouter aux favoris">${T.ico('heart', 20)}</button>` : ''}
-      ${promo >= 5 ? `<span class="tag-l c">−${promo} %</span>` : ''}
+      ${it.featured && it.status === 'published' ? '<span class="tag-l feat">À la une</span>' : promo >= 5 ? `<span class="tag-l c">−${promo} %</span>` : it.hand && T.cfg.hand && it.status === 'published' ? '<span class="tag-l hand">Main propre</span>' : ''}
       <a class="meta" href="/article/${it.id}"><span class="t">${esc(it.title)}</span><span class="s">${esc(it.brand)} · ${esc(it.size)}</span><span class="pr"><b>${dh(it.price)}</b>${it.oldPrice ? `<s>${dh(it.oldPrice)}</s>` : ''}</span></a></article></li>`;
   };
   T.grid = (items) => `<ul class="pgrid">${items.map((it, i) => T.cardHtml(it, i)).join('')}</ul>`;
   T.emptyBox = (title, text, btn) => `<div class="empty"><h3>${esc(title)}</h3><p class="muted">${esc(text || '')}</p>${btn || ''}</div>`;
   T.stars = (n) => `<span class="stars" aria-label="${n} sur 5">${'★'.repeat(Math.round(n))}${'☆'.repeat(5 - Math.round(n))}</span>`;
   T.pill = (st) => `<span class="pill ${{ confirmed: 'ok', issue: 'bad', refunded: 'bad', cancelled: '', to_ship: 'warn', shipping: 'blue', delivered: 'blue' }[st] || ''}">${esc(SH.ORDER_LBL[st] || st)}</span>`;
-  T.payPill = (p) => `<span class="pill ${{ paid: 'ok', due: 'warn', suspended: 'bad' }[p] || ''}">${esc(SH.PAY_LBL[p] || p)}</span>`;
+  T.payPill = (p) => `<span class="pill ${{ paid: 'ok', due: 'warn', suspended: 'bad', none: 'ok', owed: 'warn', collected: 'ok' }[p] || ''}">${esc(SH.PAY_LBL[p] || p)}</span>`;
+  T.pillO = (o) => (o.handover === 'hand' && o.status === 'to_ship' ? '<span class="pill warn">Rendez-vous à fixer</span>' : o.handover === 'hand' && o.status === 'confirmed' ? '<span class="pill ok">Remise confirmée</span>' : T.pill(o.status));
+  T.itemPath = (it) => `/article/${it.id}${it.slug ? '-' + it.slug : ''}`;
   T.opts = (arr, sel, ph) => (ph ? `<option value="">${esc(ph)}</option>` : '') + arr.map((o) => `<option${o === sel ? ' selected' : ''}>${esc(o)}</option>`).join('');
 
   /* ---- favoris ---- */
@@ -198,7 +200,7 @@
     const w = el.parentElement, had = $('.pop:not(.out)', w); closePops(); if (had) return;
     const adm = T.user.role === 'admin';
     w.insertAdjacentHTML('beforeend', `<div class="pop" role="menu"><h4>${esc(T.DJ.hi)} ${esc(T.user.name)}</h4>
-      <a href="/dressing">Mon dressing</a><a href="/ventes">Mes ventes</a><a href="/versements">Mes versements</a><a href="/achats">Mes achats</a><a href="/favoris">Favoris</a><a href="/recherches">Mes recherches</a><a href="/lots">Mes lots</a><a href="/messages">Messages</a>${adm ? '<hr><a href="/admin">Administration</a>' : ''}<hr><a href="/compte">Mon compte</a><a href="/aide">${esc(T.DJ.help)}</a><button class="mi" data-act="logout">Se déconnecter</button></div>`);
+      <a href="/dressing">Mon dressing</a><a href="/credits">Mes crédits</a><a href="/ventes">Mes ventes</a><a href="/versements">Mes versements</a><a href="/achats">Mes achats</a><a href="/favoris">Favoris</a><a href="/recherches">Mes recherches</a><a href="/lots">Mes lots</a><a href="/messages">Messages</a>${adm ? '<hr><a href="/admin">Administration</a>' : ''}<hr><a href="/compte">Mon compte</a><a href="/aide">${esc(T.DJ.help)}</a><button class="mi" data-act="logout">Se déconnecter</button></div>`);
   };
   T.acts.logout = async () => { await T.run(() => T.post('/auth/logout')); T.user = null; T.favs = new Set(); T.badges = { notifs: 0, messages: 0 }; T.toast(T.DJ.bye + ' !'); T.go('/'); };
   T.acts.notifs = async (el) => {

@@ -10,6 +10,29 @@ Aucun mode démo : tout passe par le serveur et une base de données.
 - Sécurité : mots de passe scrypt, sessions en cookie HttpOnly, contrôle d'origine, limitation de débit, validation côté serveur, vente unique garantie (pas de double vente).
 - Partage WhatsApp : chaque annonce a son aperçu (titre, prix, photo), plus sitemap.xml et robots.txt.
 
+## Nouveautés (v8) : revenus dès le lancement
+- **Crédits vendeur** (`/credits`, 1 crédit = 1 DH) : le vendeur recharge par virement, CashPlus/Wafacash ou espèces et indique la référence ; l'administration valide dans **Admin → Crédits** après avoir vu l'argent arriver. Aucun argent d'acheteur ne transite par Thrifty.
+- **Frais main propre** : 5 % du prix, minimum 5 DH (réglables dans Réglages), prélevés sur les crédits du vendeur à la commande, remboursés si la commande est annulée ou remboursée. Découvert toléré : 30 DH (réglable), pour que les premières ventes ne demandent aucune recharge ; au-delà, la main propre disparaît des annonces du vendeur (la livraison reste possible) et il est prévenu. 0 % = gratuit.
+- **Options payantes** (dressing) : « Remonter » 5 DH (repasse en tête des nouveautés, 1 fois / 24 h) et « À la une » 20 DH pour 7 jours (en tête du catalogue et de l'accueil, badge). Payables seulement avec un solde positif. Prix réglables dans Admin → Crédits.
+- Admin → Crédits : recharges à valider/refuser, soldes, ajustement manuel (crédits offerts), coordonnées de paiement affichées aux vendeurs, revenus (crédits vendus, options, frais main propre, dettes).
+- CGU et aide : section crédits (non transférables, non convertibles, solde remboursé à la fermeture du compte).
+
+## Nouveautés (v7)
+- **Remise en main propre** à Rabat · Salé · Témara (article ET acheteur dans la zone) : 0 DH de livraison, lieu public proposé, paiement en espèces au vendeur. L'acheteur reçoit un **code à 6 chiffres** qu'il donne au vendeur après avoir vérifié l'article ; le vendeur le saisit et la vente est conclue. 5 essais maximum, puis l'admin est alerté. Le téléphone du vendeur est montré à l'acheteur. Admin → Réglages : activer/désactiver, commission main propre (0 % par défaut ; si > 0, elle est due par le vendeur et suivie dans Commandes → « Commission reçue »). Les lots restent en livraison.
+- **Anti-contournement** : numéros, e-mails et liens WhatsApp/Telegram masqués dans les messages tant qu'aucune commande n'existe entre les deux membres pour l'article, et toujours dans les titres, descriptions, défauts, offres et présentations de profil.
+- **SEO** : URL `/article/12-veste-en-jean` (301 depuis `/article/12`), contenu de l'annonce et des catalogues rendu dans le HTML (lisible sans JavaScript, affichage immédiat), données structurées `Product` (prix MAD, état, disponibilité) et `WebSite`, textes alternatifs « … d'occasion au Maroc ».
+- **Appli installable (PWA)** : manifest, icône 512 px, service worker (pages hors ligne, photos en cache, API jamais en cache), proposition « Installer » sur Android.
+- **Confiance** : vues de l'annonce (1 par visiteur / 6 h, pas celles du vendeur), nombre de favoris, délai de réponse habituel du vendeur (médiane sur 90 jours, affiché dès 3 conversations).
+- Boutons de la fiche article qui débordaient sur mobile : corrigé.
+
+## Correctifs (v6)
+- **Domaine unique** : si `BASE_URL` est défini, toute requête arrivant sur un autre nom (`xxx.onrender.com`, `www.`) est redirigée en 301 vers lui (sauf `/healthz`). Canonical, sitemap, robots et aperçus WhatsApp utilisent `BASE_URL`. Désactivable avec `CANONICAL_REDIRECT=0`.
+- **Pages légales** : plus aucun « [à compléter] » affiché au public ; les champs vides sont omis et le contact renvoie vers le formulaire d'aide. Les obligations légales restent à remplir (variables `COMPANY_*`, `CONTACT_EMAIL`, `HOSTING_PROVIDER`).
+- **Mot de passe oublié sans e-mail** : Admin → Membres → « Lien mot de passe » génère un lien valable 24 h (copie + envoi WhatsApp). La page « Mot de passe oublié » explique la marche à suivre tant que `SMTP_URL` n'est pas configuré.
+- **Anti-abus** : les limites (inscriptions, connexions…) se basent sur l'IP réelle du visiteur (`CF-Connecting-IP`, puis `X-Forwarded-For`) et non plus sur celle du proxy, qui faisait partager une seule limite à tous les visiteurs. `PROXY_IP_HEADERS=0` pour revenir à l'ancien comportement.
+- **Administration → Résumé** : encadré listant ce qui manque dans la configuration (BASE_URL, SMTP_URL, mentions légales).
+- **Article inexistant** : vrai code 404 + `noindex`.
+
 ## Nouveautés (v5)
 - Hero avec l'image fournie (webp 480/720/1122 + jpg), cadrage mobile/bureau séparé, sans décalage de mise en page.
 - Animations discrètes (150–300 ms), `prefers-reduced-motion` respecté, rien de permanent.

@@ -7,6 +7,7 @@ const { get, all, run, tx, getSetting, setSetting, UPLOAD_DIR, DATA_DIR } = requ
 const L = require('./lib');
 const SH = require('../public/shared.js');
 const payments = require('./payments');
+const CR = require('./credits');
 const { HttpError, bad } = L;
 
 const PUBLIC = path.join(__dirname, '..', 'public');
@@ -27,6 +28,13 @@ const launchActive = (t = Date.now()) => { const l = launch(); return l.on && l.
 const rate = () => (launchActive() ? launch().rate : baseRate());
 const shipFee = () => { const s = parseInt(getSetting('ship', process.env.DEFAULT_SHIPPING || '25'), 10); return Number.isFinite(s) ? s : 25; };
 const money = (price) => { const r = rate(), s = shipFee(), c = Math.round(price * r * 100) / 100; return { price, ship: s, total: price + s, rate: r, commission: c, net: Math.round((price - c) * 100) / 100 }; };
+/* Main propre : pas de livraison ; l'acheteur paie le vendeur en espèces au rendez-vous.
+   Frais main propre (5 % par défaut, minimum 5 DH) prélevés sur les crédits du vendeur à la commande (voir credits.js). */
+const handOn = () => getSetting('hand_on', '1') === '1';
+const handRate = () => { const r = parseFloat(getSetting('hand_rate', '0.05')); return Number.isFinite(r) ? Math.min(0.3, Math.max(0, r)) : 0; };
+const handMoney = (price) => { const r = handRate(), c = CR.handFee(price, r); return { price, ship: 0, total: price, rate: r, commission: c, net: price - c }; };
+const handCode = () => String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+const scrub = (s) => SH.maskContacts(s).text; // annonces et profils : jamais de coordonnées en clair
 const base = (req) => (process.env.BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
 const notify = (userId, text, link) => run('INSERT INTO notifs(user_id,text,link,ts) VALUES(?,?,?,?)', userId, text, link || '', now());
 const notifyAdmins = (text, link) => all("SELECT id FROM users WHERE role='admin' AND banned=0").forEach((a) => notify(a.id, text, link));
@@ -59,6 +67,16 @@ app.use((req, res, next) => {
   next();
 });
 app.get('/healthz', (req, res) => { get('SELECT 1 AS ok'); res.json({ ok: true }); });
+/* Domaine unique : toute requête arrivant sur un autre nom (ex. xxx.onrender.com, www.) est renvoyée en 301
+   vers BASE_URL, pour que Google et WhatsApp ne connaissent qu'une seule adresse. */
+const CANON = (() => { try { return process.env.BASE_URL ? new URL(process.env.BASE_URL) : null; } catch { console.warn('[!] BASE_URL invalide :', process.env.BASE_URL); return null; } })();
+app.use((req, res, next) => {
+  if (!CANON || process.env.CANONICAL_REDIRECT === '0') return next();
+  const host = String(req.get('host') || '').toLowerCase();
+  if (!host || host === CANON.host.toLowerCase() || /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(host)) return next();
+  res.redirect(301, CANON.origin + req.originalUrl);
+});
+app.get('/sw.js', (req, res) => res.set({ 'Cache-Control': 'no-cache', 'Service-Worker-Allowed': '/' }).type('application/javascript').sendFile(path.join(PUBLIC, 'sw.js')));
 app.use('/uploads', express.static(UPLOAD_DIR, { maxAge: '30d', immutable: true, index: false, dotfiles: 'deny' }));
 app.use(express.static(PUBLIC, { index: false, maxAge: '10m' }));
 
@@ -91,7 +109,9 @@ app.get('/api/config', (req, res) => {
     launch: launchActive() ? { active: true, rate: launch().rate, end: launch().end } : null,
     drops: get("SELECT COUNT(*) n FROM collections c WHERE c.active=1 AND EXISTS (SELECT 1 FROM collection_items ci JOIN items i ON i.id=ci.item_id JOIN users u ON u.id=i.seller_id WHERE ci.collection_id=c.id AND i.status='published' AND u.banned=0)").n > 0,
     mailEnabled: !!process.env.SMTP_URL, zones: SH.ZONES,
-    handover: [{ id: 'carrier', label: 'Livraison par transporteur', fee: shipFee() }],
+    handover: [{ id: 'carrier', label: 'Livraison par transporteur', fee: shipFee() }].concat(handOn() ? [{ id: 'hand', label: 'Remise en main propre', fee: 0, zone: SH.HAND_ZONE, cities: SH.ZONES[SH.HAND_ZONE].cities }] : []),
+    credits: CR.prices(),
+    hand: handOn() ? { rate: handRate(), min: CR.handMin(), zone: SH.HAND_ZONE, label: SH.ZONES[SH.HAND_ZONE].label, cities: SH.ZONES[SH.HAND_ZONE].cities, spots: SH.MEET_SPOTS } : null,
     paymentMethods: payments.enabled().map((m) => ({ id: m.id, label: m.label })),
     company: { name: process.env.COMPANY_NAME || '', legalForm: process.env.COMPANY_LEGAL_FORM || '', address: process.env.COMPANY_ADDRESS || '', ice: process.env.COMPANY_ICE || '', rc: process.env.COMPANY_RC || '', email: process.env.CONTACT_EMAIL || '', phone: process.env.CONTACT_PHONE || '', host: process.env.HOSTING_PROVIDER || '' }
   });
@@ -133,7 +153,7 @@ app.patch('/api/me', needUser, A(async (req, res) => {
   const b = req.body || {}, name = L.clean(b.name, 40);
   if (name.length < 2) throw bad('Entrez votre nom.');
   if (!SH.CITIES.includes(b.city)) throw bad('Choisissez votre ville.');
-  run('UPDATE users SET name=?, city=?, phone=?, bio=? WHERE id=?', name, b.city, L.normPhone(b.phone), L.cleanText(b.bio, 300), req.user.id);
+  run('UPDATE users SET name=?, city=?, phone=?, bio=? WHERE id=?', name, b.city, L.normPhone(b.phone), scrub(L.cleanText(b.bio, 300)), req.user.id);
   res.json({ user: publicUser(get('SELECT * FROM users WHERE id=?', req.user.id)) });
 }));
 app.post('/api/me/password', needUser, authLimit, A(async (req, res) => {
@@ -171,6 +191,16 @@ app.post('/api/auth/forgot', L.rateLimit('forgot', 5, 3600000), A(async (req, re
   }
   res.json({ ok: true });
 }));
+/* Sans SMTP, l'administration génère le lien et l'envoie elle-même (WhatsApp, SMS…). Valable 24 h. */
+app.post('/api/admin/users/:id/reset-link', needUser, needAdmin, A(async (req, res) => {
+  const u = get('SELECT * FROM users WHERE id=? AND deleted=0', idParam(req.params.id));
+  if (!u) throw new HttpError(404, 'Utilisateur introuvable.');
+  if (u.role === 'admin') throw bad('Pas de lien pour un compte administrateur : utilisez « Mon compte ».');
+  const t = L.token();
+  run('DELETE FROM resets WHERE user_id=?', u.id);
+  run('INSERT INTO resets(token_hash,user_id,expires) VALUES(?,?,?)', L.sha(t), u.id, now() + 864e5);
+  res.json({ url: `${base(req)}/reinitialiser?token=${t}`, name: u.name, phone: u.phone || '' });
+}));
 app.post('/api/auth/reset', authLimit, A(async (req, res) => {
   const b = req.body || {};
   const r = get('SELECT * FROM resets WHERE token_hash=? AND expires>?', L.sha(String(b.token || '')), now());
@@ -184,7 +214,7 @@ app.post('/api/auth/reset', authLimit, A(async (req, res) => {
 
 /* ---------- photos ---------- */
 const FILE_RE = /^[a-f0-9]{32}\.jpg$/;
-app.post('/api/photos', needUser, L.rateLimit('photos', 150, 3600000, (r) => 'u' + (r.user ? r.user.id : r.ip)), A(async (req, res) => {
+app.post('/api/photos', needUser, L.rateLimit('photos', 150, 3600000, (r) => 'u' + (r.user ? r.user.id : L.clientIp(r))), A(async (req, res) => {
   const d = (req.body || {}).data;
   if (typeof d !== 'string' || !d.startsWith('data:image/jpeg;base64,')) throw bad('Format de photo non accepté (JPEG attendu).');
   const buf = Buffer.from(d.slice(23), 'base64');
@@ -197,7 +227,7 @@ app.post('/api/photos', needUser, L.rateLimit('photos', 150, 3600000, (r) => 'u'
 }));
 
 /* ---------- items ---------- */
-const ITEM_SELECT = 'SELECT i.*, u.name AS seller_name, u.city AS seller_city, u.banned AS seller_banned FROM items i JOIN users u ON u.id=i.seller_id';
+const ITEM_SELECT = 'SELECT i.*, u.name AS seller_name, u.city AS seller_city, u.banned AS seller_banned, u.credits AS seller_credits FROM items i JOIN users u ON u.id=i.seller_id';
 function photosFor(ids) {
   const m = {};
   if (!ids.length) return m;
@@ -208,7 +238,10 @@ const itemOut = (r, ph) => ({
   id: r.id, seller: { id: r.seller_id, name: r.seller_name, city: r.seller_city }, univ: r.univ, cat: r.cat, title: r.title, brand: r.brand, size: r.size, color: r.color,
   cond: r.cond, defects: r.defects, desc: r.descr, price: r.price, oldPrice: r.old_price && r.old_price > r.price ? r.old_price : null, city: r.city, pack: r.pack,
   status: r.status, created: r.created, photos: (ph[r.id] || []).map((f) => '/uploads/' + f),
-  fit: r.fit || '', measures: measuresOut(r)
+  fit: r.fit || '', measures: measuresOut(r), views: r.views || 0, slug: SH.slugify(r.title),
+  /* Main propre proposée si l'article est dans la zone et si le vendeur peut couvrir les frais (solde + découvert toléré). */
+  hand: SH.inHandZone(r.city) && CR.canPay(r.seller_credits || 0, CR.handFee(r.price, handRate())),
+  featured: (r.featured_until || 0) > Date.now(), featuredUntil: r.featured_until || 0, bumpedAt: r.bumped_at || 0
 });
 function measuresOut(r) {
   let m = {}; try { m = r.measures ? JSON.parse(r.measures) : {}; } catch { m = {}; }
@@ -218,7 +251,29 @@ const itemsOut = (rows) => { const ph = photosFor(rows.map((r) => r.id)); return
 function sellerStats(id) {
   const r = get('SELECT COUNT(*) n, AVG(rating) avg FROM reviews r JOIN orders o ON o.id=r.order_id WHERE o.seller_id=?', id);
   const sales = get("SELECT COUNT(*) n FROM orders WHERE seller_id=? AND status='confirmed'", id).n;
-  return { avg: r.n ? Math.round(r.avg * 10) / 10 : null, reviews: r.n, sales };
+  return { avg: r.n ? Math.round(r.avg * 10) / 10 : null, reviews: r.n, sales, respond: responseTime(id) };
+}
+/* Délai de réponse habituel du vendeur (médiane sur 90 jours), calculé sur les vraies conversations.
+   Affiché seulement à partir de 3 conversations : en dessous, ce ne serait pas représentatif. */
+function responseTime(sellerId) {
+  const t0 = now();
+  const rows = all(`SELECT (SELECT MIN(ts) FROM messages m WHERE m.convo_id=c.id AND m.from_id=c.buyer_id) b,
+    (SELECT MIN(m.ts) FROM messages m WHERE m.convo_id=c.id AND m.from_id=c.seller_id AND m.ts>(SELECT MIN(ts) FROM messages x WHERE x.convo_id=c.id AND x.from_id=c.buyer_id)) s
+    FROM convos c WHERE c.seller_id=? AND c.created>?`, sellerId, t0 - 90 * 864e5);
+  const d = rows.filter((r) => r.b).map((r) => (r.s ? r.s - r.b : t0 - r.b > 864e5 ? t0 - r.b : null)).filter((x) => x != null).sort((a, b) => a - b);
+  if (d.length < 3) return null;
+  const med = d[Math.floor(d.length / 2)], h = 3600000;
+  return med < h ? 'Répond en général en moins d\'une heure' : med < 4 * h ? 'Répond en général en quelques heures' : med < 24 * h ? 'Répond en général dans la journée' : 'Répond en général en plus d\'un jour';
+}
+/* Vues : une par visiteur et par annonce toutes les 6 h (mémoire, pas de traçage persistant). */
+const seen = new Map();
+function countView(req, it) {
+  if (req.user && req.user.id === it.seller_id) return;
+  const k = it.id + ':' + (req.user ? 'u' + req.user.id : L.clientIp(req)), t = now(), last = seen.get(k);
+  if (last && t - last < 6 * 3600000) return;
+  if (seen.size > 50000) seen.clear();
+  seen.set(k, t);
+  run('UPDATE items SET views=views+1 WHERE id=?', it.id);
 }
 const list = (v) => String(v || '').split(',').map((x) => x.trim()).filter(Boolean).slice(0, 20);
 
@@ -240,7 +295,9 @@ function buildItemFilter(q) {
 }
 app.get('/api/items', A(async (req, res) => {
   const q = req.query, { w, p } = buildItemFilter(q);
-  const order = q.sort === 'asc' ? 'i.price ASC, i.id DESC' : q.sort === 'desc' ? 'i.price DESC, i.id DESC' : 'i.created DESC, i.id DESC';
+  const order = q.sort === 'asc' ? 'i.price ASC, i.id DESC' : q.sort === 'desc' ? 'i.price DESC, i.id DESC'
+    /* Tri par défaut : annonces « à la une » d'abord, puis les plus récentes (une annonce remontée compte comme récente). */
+    : `(i.featured_until>${Date.now()}) DESC, MAX(i.created, i.bumped_at) DESC, i.id DESC`;
   const per = clampInt(q.per, 1, 48, 24), page = clampInt(q.page, 1, 1000, 1), where = w.join(' AND ');
   const total = get(`SELECT COUNT(*) n FROM items i JOIN users u ON u.id=i.seller_id WHERE ${where}`, ...p).n;
   const rows = all(`${ITEM_SELECT} WHERE ${where} ORDER BY ${order} LIMIT ? OFFSET ?`, ...p, per, (page - 1) * per);
@@ -254,7 +311,9 @@ app.get('/api/items/:id', A(async (req, res) => {
   const visible = r && ((r.status === 'published' && !r.seller_banned) || r.status === 'sold' || (u && (u.id === r.seller_id || u.role === 'admin')));
   if (!r || !visible) throw new HttpError(404, 'Cette annonce n\'existe pas ou n\'est plus disponible.');
   if (r.status === 'sold' && !(u && (u.id === r.seller_id || u.role === 'admin')) && false) throw new HttpError(404, 'Introuvable.');
+  if (r.status === 'published') countView(req, r);
   const item = itemsOut([r])[0];
+  item.favCount = get('SELECT COUNT(*) n FROM favs WHERE item_id=?', id).n;
   const similar = itemsOut(all(`${ITEM_SELECT} WHERE i.status='published' AND u.banned=0 AND i.id<>? AND i.univ=? AND (i.cat=? OR ABS(i.price-?)<40) ORDER BY i.created DESC LIMIT 4`, id, r.univ, r.cat, r.price));
   const convo = u ? get('SELECT id, agreed FROM convos WHERE item_id=? AND buyer_id=?', id, u.id) : null;
   const fav = u ? !!get('SELECT 1 x FROM favs WHERE user_id=? AND item_id=?', u.id, id) : false;
@@ -267,14 +326,14 @@ function checkItem(b, publish, userId, itemId) {
   if (!v.univ) errors.push('Choisissez un univers.');
   v.cat = v.univ && SH.catsFor(v.univ).includes(b.cat) ? b.cat : null;
   if (!v.cat) errors.push('Choisissez une catégorie.');
-  v.title = L.clean(b.title, 100); if (v.title.length < 3) errors.push('Ajoutez un titre (3 caractères minimum).');
-  v.desc = L.cleanText(b.desc, 2000);
+  v.title = scrub(L.clean(b.title, 100)); if (v.title.length < 3) errors.push('Ajoutez un titre (3 caractères minimum).');
+  v.desc = scrub(L.cleanText(b.desc, 2000));
   const noBrand = b.noBrand === true || /^sans marque$/i.test(L.clean(b.brand, 50));
   v.brand = noBrand ? 'Sans marque' : L.clean(b.brand, 50);
   v.size = v.univ && v.cat && SH.sizesFor(v.univ, v.cat).includes(b.size) ? b.size : '';
   v.color = SH.COLORS[b.color] ? b.color : '';
   v.cond = SH.COND.includes(b.cond) ? b.cond : '';
-  v.defects = b.noDefect === true ? 'Aucun défaut constaté' : L.cleanText(b.defects, 500);
+  v.defects = b.noDefect === true ? 'Aucun défaut constaté' : scrub(L.cleanText(b.defects, 500));
   const price = b.price === '' || b.price == null ? 0 : L.int(b.price);
   if (!Number.isFinite(price) || price < 0 || price > 100000) errors.push('Le prix doit être positif et inférieur à 100 000 DH.');
   v.price = Number.isFinite(price) && price >= 0 && price <= 100000 ? price : 0;
@@ -426,16 +485,20 @@ app.post('/api/convos', needUser, A(async (req, res) => {
   res.json({ id: c.id });
 }));
 const msgLimit = L.rateLimit('msg', 60, 600000, (r) => 'u' + r.user.id);
+/* Une commande active existe-t-elle entre ces deux membres pour cet article ? Alors les coordonnées ne sont plus masquées
+   (utile pour fixer le rendez-vous d'une remise en main propre ou guider le livreur). */
+const hasOrder = (c) => !!get("SELECT 1 x FROM orders WHERE item_id=? AND buyer_id=? AND seller_id=? AND status NOT IN ('cancelled','refunded')", c.item_id, c.buyer_id, c.seller_id);
 app.post('/api/convos/:id/messages', needUser, msgLimit, A(async (req, res) => {
-  const c = convoFor(req), text = L.cleanText((req.body || {}).text, 1000);
-  if (!text) throw bad('Écrivez un message.');
+  const c = convoFor(req), raw = L.cleanText((req.body || {}).text, 1000);
+  if (!raw) throw bad('Écrivez un message.');
+  const { text, masked } = hasOrder(c) ? { text: raw, masked: false } : SH.maskContacts(raw);
   run("INSERT INTO messages(convo_id,from_id,type,text,ts) VALUES(?,?,'text',?,?)", c.id, req.user.id, text, now());
   const it = get('SELECT title FROM items WHERE id=?', c.item_id);
   notify(otherId(c, req.user.id), `Nouveau message de ${req.user.name} : ${it ? it.title : ''}`, '/messages/' + c.id);
-  res.json({ ok: true });
+  res.json({ ok: true, masked });
 }));
 app.post('/api/convos/:id/offers', needUser, msgLimit, A(async (req, res) => {
-  const c = convoFor(req), amount = L.int((req.body || {}).amount), text = L.cleanText((req.body || {}).text, 300);
+  const c = convoFor(req), amount = L.int((req.body || {}).amount), text = scrub(L.cleanText((req.body || {}).text, 300));
   const it = get('SELECT * FROM items WHERE id=?', c.item_id);
   if (!it || it.status !== 'published') throw new HttpError(409, 'Cet article n\'est plus disponible.');
   if (!(amount > 0)) throw bad('Entrez un montant positif.');
@@ -479,11 +542,17 @@ function orderOut(o, viewer, full) {
     id: o.id, code: code(o.id), itemId: o.item_id, title: o.item_title, brand: o.item_brand, size: o.item_size, photo: o.item_photo ? '/uploads/' + o.item_photo : null,
     buyer: { id: o.buyer_id, name: o.buyer_name }, seller: { id: o.seller_id, name: o.seller_name }, price: o.price, ship: o.ship, total: o.total, rate: o.rate,
     commission: o.commission, net: o.net, status: o.status, payout: o.payout, pack: o.pack, city: o.ship_city, paymentMethod: o.payment_method, tracking: o.tracking, created: o.created,
-    groupId: o.group_id || null, bundleTitle: o.bundle_title || ''
+    groupId: o.group_id || null, bundleTitle: o.bundle_title || '', handover: o.handover || 'carrier'
   };
   if (full) {
     const ok = viewer.role === 'admin' || viewer.id === o.buyer_id || viewer.id === o.seller_id;
     if (ok) { out.shipName = o.ship_name; out.address = o.ship_address; out.phone = o.ship_phone; }
+    if (o.handover === 'hand') {
+      /* Le code n'est montré qu'à l'acheteur : il le donne au vendeur une fois l'article vérifié, au rendez-vous. */
+      if (viewer.id === o.buyer_id && o.status === 'to_ship') out.handCode = o.hand_code;
+      if (viewer.id === o.buyer_id || viewer.role === 'admin') { const s = get('SELECT phone FROM users WHERE id=?', o.seller_id); out.sellerPhone = s ? s.phone : ''; }
+      out.handTriesLeft = Math.max(0, HAND_MAX_TRIES - (o.hand_tries || 0));
+    }
     out.payoutRef = o.payout_ref;
     out.issue = o.issue_reason ? { reason: o.issue_reason, text: o.issue_text, ts: o.issue_ts } : null;
     const r = get('SELECT * FROM reviews WHERE order_id=?', o.group_id || o.id); out.review = r ? { rating: r.rating, text: r.text, ts: r.ts } : null;
@@ -494,38 +563,54 @@ function orderOut(o, viewer, full) {
 }
 app.post('/api/orders', needUser, L.rateLimit('order', 30, 3600000, (r) => 'u' + r.user.id), A(async (req, res) => {
   const b = req.body || {}, errors = [];
+  const hand = b.handover === 'hand';
   const name = L.clean(b.name, 60), addr = L.clean(b.address, 200), phone = L.normPhone(b.phone), city = SH.CITIES.includes(b.city) ? b.city : '';
-  const method = b.paymentMethod || 'cod';
-  if (name.length < 2) errors.push('Renseignez le nom du destinataire.');
-  if (addr.length < 5) errors.push('Renseignez l\'adresse de livraison.');
-  if (!city) errors.push('Choisissez la ville de livraison.');
+  const method = hand ? 'cash_hand' : (b.paymentMethod || 'cod');
+  if (name.length < 2) errors.push(hand ? 'Renseignez votre nom.' : 'Renseignez le nom du destinataire.');
+  if (!hand && addr.length < 5) errors.push('Renseignez l\'adresse de livraison.');
+  if (!city) errors.push(hand ? 'Choisissez votre ville.' : 'Choisissez la ville de livraison.');
   if (!phone) errors.push('Entrez un numéro de téléphone valide.');
-  if (!payments.isEnabled(method)) errors.push('Moyen de paiement indisponible.');
+  if (hand && !handOn()) errors.push('La remise en main propre n\'est pas disponible pour le moment.');
+  if (hand && city && !SH.inHandZone(city)) errors.push(`La remise en main propre est réservée à ${SH.ZONES[SH.HAND_ZONE].label}.`);
+  if (!hand && !payments.isEnabled(method)) errors.push('Moyen de paiement indisponible.');
   if (errors.length) throw bad(errors[0], errors);
-  const orderId = tx(() => {
+  let orderId;
+  try { orderId = tx(() => {
     const it = get('SELECT * FROM items WHERE id=?', idParam(b.itemId));
     if (!it || it.status !== 'published') throw new HttpError(409, 'Cet article n\'est plus disponible.');
     if (it.seller_id === req.user.id) throw bad('Vous ne pouvez pas acheter votre propre annonce.');
-    const seller = get('SELECT banned FROM users WHERE id=?', it.seller_id);
+    const seller = get('SELECT banned, credits FROM users WHERE id=?', it.seller_id);
     if (seller.banned) throw new HttpError(409, 'Cet article n\'est plus disponible.');
+    if (hand && !SH.inHandZone(it.city)) throw bad(`Cet article n'est pas à ${SH.ZONES[SH.HAND_ZONE].label} : remise en main propre impossible.`);
     const c = get('SELECT agreed FROM convos WHERE item_id=? AND buyer_id=?', it.id, req.user.id);
-    const price = c && c.agreed ? Math.min(c.agreed, it.price) : it.price, m = money(price);
+    const price = c && c.agreed ? Math.min(c.agreed, it.price) : it.price, m = hand ? handMoney(price) : money(price);
+    if (hand && !CR.canPay(seller.credits, m.commission)) throw Object.assign(new HttpError(409, 'Ce vendeur ne propose pas la main propre pour le moment. Choisissez la livraison à domicile.'), { lowCredits: it });
     if (run("UPDATE items SET status='sold', updated=? WHERE id=? AND status='published'", now(), it.id).changes !== 1) throw new HttpError(409, 'Cet article vient d\'être vendu.');
     const photo = get('SELECT file FROM item_photos WHERE item_id=? ORDER BY pos LIMIT 1', it.id);
-    const r = run(`INSERT INTO orders(item_id,item_title,item_brand,item_size,item_photo,buyer_id,seller_id,price,ship,total,rate,commission,net,status,payout,pack,ship_name,ship_address,ship_city,ship_phone,payment_method,created)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'to_ship','pending',?,?,?,?,?,?,?)`,
-      it.id, it.title, it.brand, it.size, photo ? photo.file : null, req.user.id, it.seller_id, m.price, m.ship, m.total, m.rate, m.commission, m.net, it.pack, name, addr, city, phone, method, now());
-    evt(r.id, 'Commande passée');
-    notify(it.seller_id, `Vente : ${it.title} à ${dh(price)}. Préparez le colis.`, '/commande/' + r.id);
+    const meet = hand ? L.clean(SH.MEET_SPOTS.includes(b.spot) ? b.spot + (addr ? ' · ' + addr : '') : addr, 200) : addr;
+    const r = run(`INSERT INTO orders(item_id,item_title,item_brand,item_size,item_photo,buyer_id,seller_id,price,ship,total,rate,commission,net,status,payout,pack,ship_name,ship_address,ship_city,ship_phone,payment_method,created,handover,hand_code)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'to_ship','pending',?,?,?,?,?,?,?,?,?)`,
+      it.id, it.title, it.brand, it.size, photo ? photo.file : null, req.user.id, it.seller_id, m.price, m.ship, m.total, m.rate, m.commission, m.net, it.pack, name, meet, city, phone, method, now(), hand ? 'hand' : 'carrier', hand ? handCode() : '');
+    evt(r.id, hand ? 'Commande passée · remise en main propre' : 'Commande passée');
+    if (hand && m.commission > 0) {
+      const bal = CR.move(it.seller_id, -m.commission, 'hand_fee', r.id, code(r.id) + ' · ' + it.title);
+      evt(r.id, `Frais main propre (${dh(m.commission)}) prélevés sur les crédits du vendeur`);
+      if (bal < 0) notify(it.seller_id, `Votre solde de crédits est de ${dh(bal)}. Rechargez pour continuer à proposer la main propre et les options.`, '/credits');
+    }
+    notify(it.seller_id, hand ? `Vente en main propre : ${it.title} à ${dh(price)}. Contactez l'acheteur pour fixer le rendez-vous.` : `Vente : ${it.title} à ${dh(price)}. Préparez le colis.`, '/commande/' + r.id);
     return r.id;
-  });
+  }); } catch (e) {
+    /* Hors transaction (annulée), pour que le vendeur sache qu'il a manqué une vente faute de crédits. */
+    if (e.lowCredits) notify(e.lowCredits.seller_id, `Un acheteur voulait « ${e.lowCredits.title} » en main propre, mais votre solde de crédits est trop bas. Rechargez pour proposer la main propre.`, '/credits');
+    throw e;
+  }
   res.json({ id: orderId });
 }));
 app.get('/api/orders', needUser, A(async (req, res) => {
   const role = req.query.role === 'seller' ? 'seller' : 'buyer';
   const rows = all(`${ORDER_SELECT} WHERE o.${role}_id=? ORDER BY o.created DESC LIMIT 200`, req.user.id);
   const payout = { pending: 0, due: 0, paid: 0, suspended: 0 };
-  if (role === 'seller') all('SELECT payout, SUM(net) s FROM orders WHERE seller_id=? GROUP BY payout', req.user.id).forEach((r) => { if (r.payout in payout) payout[r.payout] = r.s; });
+  if (role === 'seller') all("SELECT payout, SUM(net) s FROM orders WHERE seller_id=? AND handover<>'hand' GROUP BY payout", req.user.id).forEach((r) => { if (r.payout in payout) payout[r.payout] = r.s; });
   res.json({ orders: rows.map((o) => orderOut(o, req.user, false)), payout });
 }));
 function orderFor(req) {
@@ -543,10 +628,30 @@ function changed(o, status, payout, text) {
 const rb = (req) => req.body || {};
 app.post('/api/orders/:id/ship', needUser, A(async (req, res) => {
   const o = orderFor(req);
-  if (o.seller_id !== req.user.id || o.status !== 'to_ship') throw new HttpError(409, 'Action impossible pour cette commande.');
+  if (o.seller_id !== req.user.id || o.status !== 'to_ship' || o.handover === 'hand') throw new HttpError(409, 'Action impossible pour cette commande.');
   sibs(o).forEach((x) => run('UPDATE orders SET tracking=? WHERE id=?', L.clean(rb(req).tracking, 60), x.id));
   changed(o, 'shipping', null, 'Expédiée par le vendeur');
   notify(o.buyer_id, `Votre commande ${o.item_title} est expédiée.`, '/commande/' + o.id);
+  res.json({ ok: true });
+}));
+/* Remise en main propre : au rendez-vous, l'acheteur vérifie l'article puis donne son code à 6 chiffres ; le vendeur le saisit.
+   Code juste = vente conclue (pas de colis, pas de livreur). 5 essais maximum, puis l'équipe reprend la main. */
+const HAND_MAX_TRIES = 5;
+app.post('/api/orders/:id/handover', needUser, A(async (req, res) => {
+  const o = orderFor(req);
+  if (o.seller_id !== req.user.id || o.handover !== 'hand' || o.status !== 'to_ship') throw new HttpError(409, 'Action impossible pour cette commande.');
+  if ((o.hand_tries || 0) >= HAND_MAX_TRIES) throw new HttpError(429, 'Trop de codes erronés. Contactez-nous depuis la page d\'aide.');
+  const given = String(rb(req).code || '').replace(/\D/g, '');
+  const okCode = given.length === 6 && o.hand_code.length === 6 && crypto.timingSafeEqual(Buffer.from(given), Buffer.from(o.hand_code));
+  if (!okCode) {
+    run('UPDATE orders SET hand_tries=hand_tries+1 WHERE id=?', o.id);
+    const left = HAND_MAX_TRIES - (o.hand_tries || 0) - 1;
+    if (left <= 0) notifyAdmins(`Code de remise bloqué sur ${code(o.id)} : vérifier la situation.`, '/commande/' + o.id);
+    throw bad(left > 0 ? `Code incorrect. ${left} essai${left > 1 ? 's' : ''} restant${left > 1 ? 's' : ''}.` : 'Code incorrect. Remise bloquée : l\'équipe Thrifty a été prévenue.');
+  }
+  /* Frais déjà prélevés sur les crédits à la commande : rien à percevoir. (« owed » reste pour les commandes v7.) */
+  changed(o, 'confirmed', o.commission > 0 ? 'collected' : 'none', 'Remise en main propre confirmée (code de l\'acheteur)');
+  notify(o.buyer_id, `Remise confirmée pour ${o.item_title}. Laissez un avis au vendeur !`, '/commande/' + o.id);
   res.json({ ok: true });
 }));
 app.post('/api/orders/:id/confirm', needUser, A(async (req, res) => {
@@ -576,6 +681,7 @@ app.post('/api/orders/:id/cancel', needUser, A(async (req, res) => {
     const S = sibs(o);
     changed(o, 'cancelled', 'cancelled', `Commande annulée par ${adm ? 'l\'administration' : o.seller_id === req.user.id ? 'le vendeur' : 'l\'acheteur'}`);
     S.forEach((x) => { if (x.item_id) run("UPDATE items SET status='published' WHERE id=? AND status='sold'", x.item_id); });
+    CR.refundHand(o, code(o.id) + ' annulée');
   });
   [o.buyer_id, o.seller_id].filter((x) => x !== req.user.id).forEach((u) => notify(u, `Commande ${o.item_title} annulée.`, '/commande/' + o.id));
   res.json({ ok: true });
@@ -614,6 +720,16 @@ app.post('/api/contact', contactLimit, A(async (req, res) => {
 }));
 /* ---------- admin ---------- */
 const admin = [needUser, needAdmin];
+/* Ce qui manque encore dans la configuration de production (affiché en tête de l'administration). */
+function setupIssues(req) {
+  const E = process.env, out = [];
+  if (!CANON) out.push({ k: 'BASE_URL', t: 'Adresse publique non définie : Google et WhatsApp voient l\'adresse technique de l\'hébergeur au lieu de votre domaine.' });
+  if (!E.SMTP_URL) out.push({ k: 'SMTP_URL', t: 'Envoi d\'e-mails non configuré : « mot de passe oublié » n\'envoie rien. En attendant, générez le lien depuis Membres.' });
+  const miss = [['COMPANY_NAME', 'raison sociale'], ['COMPANY_LEGAL_FORM', 'forme juridique'], ['COMPANY_ADDRESS', 'adresse'], ['COMPANY_ICE', 'ICE'], ['COMPANY_RC', 'RC'], ['CONTACT_EMAIL', 'e-mail de contact'], ['HOSTING_PROVIDER', 'hébergeur']].filter(([k]) => !E[k]);
+  if (miss.length) out.push({ k: miss.map(([k]) => k).join(', '), t: `Mentions légales incomplètes (${miss.map(([, l]) => l).join(', ')}).` });
+  if (CANON && req.get('host') && req.get('host') !== CANON.host) out.push({ k: 'BASE_URL', t: `Vous consultez le site via ${req.get('host')} alors que BASE_URL indique ${CANON.host}.` });
+  return out;
+}
 app.get('/api/admin/stats', admin, (req, res) => {
   const os = all('SELECT id,status,payout,price,commission,net,created FROM orders ORDER BY created DESC');
   const sum = (a, f) => Math.round(a.reduce((x, o) => x + f(o), 0) * 100) / 100;
@@ -623,9 +739,11 @@ app.get('/api/admin/stats', admin, (req, res) => {
     comConfirmed: sum(os.filter((o) => o.status === 'confirmed'), (o) => o.commission),
     comPending: sum(os.filter((o) => ['to_ship', 'shipping', 'delivered'].includes(o.status)), (o) => o.commission),
     due: sum(os.filter((o) => o.payout === 'due'), (o) => o.net), paid: sum(os.filter((o) => o.payout === 'paid'), (o) => o.net),
+    handOwed: sum(os.filter((o) => o.payout === 'owed'), (o) => o.commission),
     issues: byStatus.issue || 0, byStatus, users: get("SELECT COUNT(*) n FROM users WHERE deleted=0").n, listings: get("SELECT COUNT(*) n FROM items WHERE status='published'").n,
     recent: os.slice(0, 8).map((o) => ({ id: o.id, code: code(o.id), commission: o.commission, status: o.status })),
-    unreadContacts: get('SELECT COUNT(*) n FROM contacts WHERE done=0').n, openReports: get("SELECT COUNT(*) n FROM reports WHERE status='open'").n
+    unreadContacts: get('SELECT COUNT(*) n FROM contacts WHERE done=0').n, openReports: get("SELECT COUNT(*) n FROM reports WHERE status='open'").n,
+    setup: setupIssues(req), credits: CR.stats()
   });
 });
 app.get('/api/admin/orders', admin, (req, res) => {
@@ -638,12 +756,14 @@ app.post('/api/admin/orders/:id/:action', admin, A(async (req, res) => {
   if (a === 'deliver' && o.status === 'shipping') { changed(o, 'delivered', null, 'Livraison confirmée par l\'administration'); notify(o.buyer_id, `Votre commande ${o.item_title} est livrée. Vérifiez-la puis confirmez la réception.`, '/commande/' + o.id); }
   else if (a === 'resolve' && o.status === 'issue') { changed(o, o.prev_status || 'shipping', 'pending', 'Dossier résolu : le parcours reprend'); [o.buyer_id, o.seller_id].forEach((u) => notify(u, `Le dossier sur ${o.item_title} est résolu.`, '/commande/' + o.id)); }
   else if (a === 'refund' && o.status === 'issue') {
-    tx(() => { const S = sibs(o); changed(o, 'refunded', 'cancelled', 'Remboursement intégral enregistré (prix et livraison)'); S.forEach((x) => { if (x.item_id) run("UPDATE items SET status='hidden' WHERE id=?", x.item_id); }); });
+    tx(() => { const S = sibs(o); changed(o, 'refunded', 'cancelled', 'Remboursement intégral enregistré (prix et livraison)'); S.forEach((x) => { if (x.item_id) run("UPDATE items SET status='hidden' WHERE id=?", x.item_id); }); CR.refundHand(o, code(o.id) + ' remboursée'); });
     [o.buyer_id, o.seller_id].forEach((u) => notify(u, `Commande ${o.item_title} remboursée.`, '/commande/' + o.id));
   } else if (a === 'pay' && o.payout === 'due') {
     sibs(o).forEach((x) => run('UPDATE orders SET payout_ref=? WHERE id=?', L.clean(rb(req).reference, 80), x.id));
     changed(o, o.status, 'paid', 'Versement vendeur exécuté' + (rb(req).reference ? ' (réf. ' + L.clean(rb(req).reference, 80) + ')' : ''));
     notify(o.seller_id, `Versement de ${dh(o.net)} exécuté pour ${o.item_title}.`, '/versements');
+  } else if (a === 'collect' && o.payout === 'owed') {
+    changed(o, o.status, 'collected', 'Commission main propre reçue par Thrifty');
   } else throw new HttpError(409, 'Action impossible pour cette commande.');
   res.json({ ok: true });
 }));
@@ -669,7 +789,7 @@ app.post('/api/admin/users/:id/:action', admin, A(async (req, res) => {
   else throw new HttpError(404, 'Action inconnue.');
   res.json({ ok: true });
 }));
-app.get('/api/admin/settings', admin, (req, res) => { const l = launch(); res.json({ rate: baseRate(), ship: shipFee(), effectiveRate: rate(), launch: { on: l.on, rate: l.rate, start: l.start, end: l.end, active: launchActive() } }); });
+app.get('/api/admin/settings', admin, (req, res) => { const l = launch(); res.json({ rate: baseRate(), ship: shipFee(), effectiveRate: rate(), handOn: handOn(), handRate: handRate(), handMin: CR.handMin(), creditLimit: CR.creditLimit(), launch: { on: l.on, rate: l.rate, start: l.start, end: l.end, active: launchActive() } }); });
 app.post('/api/admin/settings', admin, A(async (req, res) => {
   const b = rb(req), r = Number(b.rate), sh = L.int(b.ship);
   if (!(r >= 0 && r <= 0.3) || !(sh >= 0 && sh <= 200)) throw bad('Taux entre 0 et 30 %, livraison entre 0 et 200 DH.');
@@ -682,6 +802,10 @@ app.post('/api/admin/settings', admin, A(async (req, res) => {
     }
     lo = { on, lr: Number.isFinite(lr) ? lr : 0, st: Number.isFinite(st) ? st : 0, en: Number.isFinite(en) ? en : 0 };
   }
+  if (b.handRate !== undefined) { const hr = Number(b.handRate); if (!(hr >= 0 && hr <= 0.3)) throw bad('Commission main propre entre 0 et 30 %.'); setSetting('hand_rate', Math.round(hr * 1000) / 1000); }
+  if (typeof b.handOn === 'boolean') setSetting('hand_on', b.handOn ? '1' : '0');
+  if (b.handMin !== undefined) { const hm = L.int(b.handMin); if (!(hm >= 0 && hm <= 100)) throw bad('Minimum main propre entre 0 et 100 DH.'); setSetting('hand_min', hm); }
+  if (b.creditLimit !== undefined) { const cl = L.int(b.creditLimit); if (!(cl >= 0 && cl <= 500)) throw bad('Découvert toléré entre 0 et 500 DH.'); setSetting('credit_limit', cl); }
   setSetting('rate', Math.round(r * 1000) / 1000); setSetting('ship', sh);
   if (lo) { setSetting('launch_on', lo.on ? '1' : '0'); setSetting('launch_rate', Math.round(lo.lr * 1000) / 1000); setSetting('launch_start', lo.st); setSetting('launch_end', lo.en); }
   res.json({ ok: true });
@@ -695,26 +819,62 @@ app.get('/api/admin/export/orders.csv', admin, (req, res) => {
   res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="commandes-thrifty.csv"' }).send('﻿' + [head.map(L.csvCell).join(','), ...lines].join('\n'));
 });
 require('./features').mount({ app, A, get, all, run, tx, L, SH, HttpError, bad, needUser, needAdmin, notify, notifyAdmins, itemsOut, ITEM_SELECT, photosFor, idParam, money, rate, shipFee, evt, code, dh, base, page, buildItemFilter, sellerStats, publicUser, orderOut, ORDER_SELECT, payments, now, rb, authLimit, contactLimit });
+CR.mount({ app, A, L, HttpError, bad, needUser, needAdmin, notify, notifyAdmins, idParam, dh });
 app.use('/api', (req, res) => res.status(404).json({ error: 'not_found', message: 'Introuvable.' }));
 
 /* ---------- pages (SPA + SEO) ---------- */
 const INDEX = fs.readFileSync(path.join(PUBLIC, 'index.html'), 'utf8');
 function page(req, res, meta) {
   const m = Object.assign({ title: 'Thrifty · Seconde main. Premier choix.', desc: 'Thrifty, la marketplace marocaine de vêtements de seconde main pour femmes, hommes et enfants. Achetez, vendez, négociez.', image: base(req) + '/assets/og.jpg', url: base(req) + req.path }, meta || {});
-  const t = `<title>${L.esc(m.title)}</title><meta name="description" content="${L.esc(m.desc)}"><link rel="canonical" href="${L.esc(m.url)}"><meta property="og:type" content="website"><meta property="og:site_name" content="Thrifty"><meta property="og:title" content="${L.esc(m.title)}"><meta property="og:description" content="${L.esc(m.desc)}"><meta property="og:image" content="${L.esc(m.image)}"><meta property="og:url" content="${L.esc(m.url)}"><meta name="twitter:card" content="summary_large_image">`;
-  res.set('Cache-Control', 'no-cache').type('html').send(INDEX.replace('<!--META-->', t));
+  const ld = m.jsonld ? `<script type="application/ld+json">${JSON.stringify(m.jsonld).replace(/</g, '\\u003c')}</script>` : '';
+  const t = `<title>${L.esc(m.title)}</title><meta name="description" content="${L.esc(m.desc)}"><link rel="canonical" href="${L.esc(m.url)}"><meta property="og:type" content="website"><meta property="og:site_name" content="Thrifty"><meta property="og:locale" content="fr_MA"><meta property="og:title" content="${L.esc(m.title)}"><meta property="og:description" content="${L.esc(m.desc)}"><meta property="og:image" content="${L.esc(m.image)}"><meta property="og:url" content="${L.esc(m.url)}"><meta name="twitter:card" content="summary_large_image">${m.noindex ? '<meta name="robots" content="noindex">' : ''}<link rel="manifest" href="/manifest.webmanifest">${ld}`;
+  /* Contenu rendu côté serveur dans <main> : Google le lit sans JavaScript et le visiteur voit la page tout de suite.
+     L'application remplace ce contenu dès qu'elle démarre. */
+  res.set('Cache-Control', 'no-cache').type('html').send(INDEX.replace('<!--META-->', t).replace('<!--SSR-->', m.body || ''));
 }
-app.get('/article/:id', (req, res) => {
-  const id = Number(req.params.id), r = Number.isInteger(id) ? get(`${ITEM_SELECT} WHERE i.id=? AND i.status IN ('published','sold') AND u.banned=0`, id) : null;
-  if (!r) return page(req, res);
-  const ph = photosFor([r.id])[r.id];
-  page(req, res, { title: `${r.title} · ${r.price} DH · Thrifty`, desc: `${r.brand}, taille ${r.size}, ${r.cond}. ${r.descr}`.slice(0, 200), image: ph && ph[0] ? base(req) + '/uploads/' + ph[0] : undefined });
+const itemUrl = (b, r) => `${b}/article/${r.id}${SH.slugify(r.title) ? '-' + SH.slugify(r.title) : ''}`;
+const altFor = (r) => `${r.title}${r.brand && r.brand !== 'Sans marque' ? ' ' + r.brand : ''}${r.size ? ' taille ' + r.size : ''} d'occasion au Maroc`;
+const ssrCards = (b, rows) => {
+  const ph = photosFor(rows.map((r) => r.id));
+  return `<ul class="pgrid">${rows.map((r) => `<li><a href="${L.esc(itemUrl('', r))}">${ph[r.id] && ph[r.id][0] ? `<img src="/uploads/${L.esc(ph[r.id][0])}" alt="${L.esc(altFor(r))}" loading="lazy" width="300" height="400">` : ''}<b>${L.esc(r.title)}</b> · ${r.price} DH · ${L.esc(r.brand)} · ${L.esc(r.size)} · ${L.esc(r.city)}</a></li>`).join('')}</ul>`;
+};
+app.get(/^\/article\/(\d+)(?:-([a-z0-9-]*))?\/?$/, (req, res) => {
+  const id = Number(req.params[0]), r = get(`${ITEM_SELECT} WHERE i.id=? AND i.status IN ('published','sold') AND u.banned=0`, id);
+  if (!r) { res.status(404); return page(req, res, { title: 'Article introuvable · Thrifty', noindex: true }); }
+  const b = base(req), canonPath = itemUrl('', r);
+  if (req.path !== canonPath) return res.redirect(301, canonPath + (req.originalUrl.includes('?') ? req.originalUrl.slice(req.originalUrl.indexOf('?')) : ''));
+  const ph = photosFor([r.id])[r.id] || [], sold = r.status === 'sold';
+  const cond = /^Neuf/.test(r.cond) ? 'https://schema.org/NewCondition' : 'https://schema.org/UsedCondition';
+  const jsonld = {
+    '@context': 'https://schema.org', '@type': 'Product', name: r.title, description: r.descr, image: ph.map((f) => b + '/uploads/' + f), sku: 'T-' + r.id,
+    brand: { '@type': 'Brand', name: r.brand || 'Sans marque' }, color: r.color || undefined, size: r.size || undefined, itemCondition: cond,
+    offers: { '@type': 'Offer', url: b + canonPath, price: r.price, priceCurrency: 'MAD', availability: sold ? 'https://schema.org/SoldOut' : 'https://schema.org/InStock', itemCondition: cond, seller: { '@type': 'Person', name: r.seller_name }, areaServed: 'MA' }
+  };
+  const body = `<div class="wrap sp"><nav class="crumbs"><a href="/">Accueil</a><span>/</span><a href="/${L.esc(r.univ)}">${L.esc(SH.UNIV[r.univ] || '')}</a><span>/</span><span>${L.esc(r.cat)}</span></nav><article class="item"><div>${ph[0] ? `<img src="/uploads/${L.esc(ph[0])}" alt="${L.esc(altFor(r))}" width="600" height="800" style="max-width:100%;height:auto;border-radius:16px">` : ''}</div><div><h1 class="ititle">${L.esc(r.title)}</h1><p class="bigprice"><b>${r.price} DH</b>${sold ? ' · Vendu' : ''}</p><dl class="facts"><div><dt>Marque</dt><dd>${L.esc(r.brand)}</dd></div><div><dt>Taille</dt><dd>${L.esc(r.size)}</dd></div><div><dt>État</dt><dd>${L.esc(r.cond)}</dd></div><div><dt>Couleur</dt><dd>${L.esc(r.color)}</dd></div><div><dt>Ville</dt><dd>${L.esc(r.city)}</dd></div></dl><p style="white-space:pre-line">${L.esc(r.descr)}</p></div></article></div>`;
+  page(req, res, { url: b + canonPath, title: `${r.title}${r.brand && r.brand !== 'Sans marque' ? ' ' + r.brand : ''} · ${r.price} DH · d'occasion à ${r.city} | Thrifty`, desc: `${r.brand}, taille ${r.size}, ${r.cond}. ${r.descr}`.slice(0, 200), image: ph[0] ? b + '/uploads/' + ph[0] : undefined, jsonld, body });
 });
+/* Catalogues : titres SEO + liste des dernières annonces en HTML (liens explorables par Google). */
+const UNIV_SEO = { femmes: 'Vêtements femme d\'occasion au Maroc', hommes: 'Vêtements homme d\'occasion au Maroc', enfants: 'Vêtements enfant d\'occasion au Maroc', catalogue: 'Tous les vêtements d\'occasion au Maroc', promos: 'Promos sur les vêtements d\'occasion au Maroc' };
+app.get(/^\/(femmes|hommes|enfants|catalogue|promos)\/?$/, (req, res) => {
+  const k = req.params[0], { w, p } = buildItemFilter(SH.UNIV[k] ? { univ: k } : k === 'promos' ? { promo: '1' } : {});
+  const rows = all(`${ITEM_SELECT} WHERE ${w.join(' AND ')} ORDER BY i.created DESC LIMIT 48`, ...p);
+  page(req, res, { title: `${UNIV_SEO[k]} | Thrifty`, desc: `${UNIV_SEO[k]} : achetez et vendez en sécurité, mesures à plat, paiement à la livraison${handOn() ? ' ou remise en main propre à Rabat, Salé et Témara' : ''}.`, body: `<div class="wrap sp"><h1 class="h2">${L.esc(UNIV_SEO[k])}</h1>${ssrCards(base(req), rows)}</div>` });
+});
+app.get('/', (req, res) => {
+  const { w, p } = buildItemFilter({}), rows = all(`${ITEM_SELECT} WHERE ${w.join(' AND ')} ORDER BY i.created DESC LIMIT 24`, ...p);
+  page(req, res, { title: 'Thrifty · Vêtements d\'occasion au Maroc · Acheter et vendre en sécurité', jsonld: { '@context': 'https://schema.org', '@type': 'WebSite', name: 'Thrifty', url: base(req) + '/', potentialAction: { '@type': 'SearchAction', target: base(req) + '/catalogue?q={q}', 'query-input': 'required name=q' } }, body: `<div class="wrap sp"><h1 class="h2">Vêtements d'occasion au Maroc</h1><p>Achetez et vendez vos vêtements de seconde main : femmes, hommes, enfants. Paiement à la livraison${handOn() ? ', ou remise en main propre à Rabat, Salé et Témara' : ''}.</p>${ssrCards(base(req), rows)}</div>` });
+});
+/* Appli installable (PWA). sw.js est servi plus haut, avant les fichiers statiques, pour ne jamais être mis en cache. */
+app.get('/manifest.webmanifest', (req, res) => res.set('Cache-Control', 'public, max-age=3600').type('application/manifest+json').send(JSON.stringify({
+  name: 'Thrifty · Seconde main', short_name: 'Thrifty', description: 'Achetez et vendez vos vêtements de seconde main au Maroc.', lang: 'fr-MA', start_url: '/?source=app', scope: '/', display: 'standalone', background_color: '#121317', theme_color: '#3454F5',
+  icons: [{ src: '/assets/icon.png', sizes: '192x192', type: 'image/png' }, { src: '/assets/icon-512.png', sizes: '512x512', type: 'image/png' }],
+  shortcuts: [{ name: 'Vendre', url: '/vendre' }, { name: 'Messages', url: '/messages' }]
+})));
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nDisallow: /api/\nDisallow: /admin\nDisallow: /commande\nDisallow: /paiement\nSitemap: ${base(req)}/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => {
   const b = base(req), urls = ['/', '/femmes', '/hommes', '/enfants', '/catalogue', '/promos', '/aide', '/cgu', '/confidentialite', '/mentions-legales'].map((p) => `<url><loc>${b}${p}</loc></url>`);
   all("SELECT slug FROM collections WHERE active=1").forEach((c) => urls.push(`<url><loc>${b}/drops/${c.slug}</loc></url>`));
-  all("SELECT i.id,i.updated FROM items i JOIN users u ON u.id=i.seller_id WHERE i.status='published' AND u.banned=0 ORDER BY i.created DESC LIMIT 5000").forEach((r) => urls.push(`<url><loc>${b}/article/${r.id}</loc><lastmod>${new Date(r.updated).toISOString().slice(0, 10)}</lastmod></url>`));
+  all("SELECT i.id,i.title,i.updated FROM items i JOIN users u ON u.id=i.seller_id WHERE i.status='published' AND u.banned=0 ORDER BY i.created DESC LIMIT 5000").forEach((r) => urls.push(`<url><loc>${L.esc(itemUrl(b, r))}</loc><lastmod>${new Date(r.updated).toISOString().slice(0, 10)}</lastmod></url>`));
   res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls.join('')}</urlset>`);
 });
 app.get(/^\/(?!api\/|uploads\/).*/, (req, res) => page(req, res));
@@ -748,6 +908,10 @@ function sweep() {
 }
 async function start() {
   await bootstrapAdmin();
+  if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
+    if (!CANON) console.warn('[!] BASE_URL non défini : canonical, sitemap et aperçus WhatsApp utiliseront l\'adresse technique. Ex. BASE_URL=https://thrifty-shop.store');
+    if (!process.env.SMTP_URL) console.warn('[!] SMTP_URL non défini : aucun e-mail ne part (mot de passe oublié). Lien manuel : Admin → Membres.');
+  }
   sweep(); setInterval(sweep, 6 * 3600000).unref();
   const server = app.listen(PORT, () => console.log(`Thrifty démarré sur le port ${PORT} · données : ${DATA_DIR}`));
   const stop = () => server.close(() => process.exit(0));

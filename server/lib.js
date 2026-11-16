@@ -32,10 +32,21 @@ const isEmail = (e) => typeof e === 'string' && e.length <= 160 && /^[^\s@]+@[^\
 const normPhone = (p) => { const d = String(p || '').replace(/[^\d+]/g, ''); const digits = d.replace(/\D/g, ''); return digits.length >= 8 && digits.length <= 15 ? d.slice(0, 20) : ''; };
 const int = (v) => { const n = Number(v); return Number.isFinite(n) ? Math.round(n) : NaN; };
 
+/* IP réelle du visiteur. Derrière Cloudflare + Render, req.ip est celle du proxy : sans ça, TOUS les visiteurs
+   partagent la même limite (ex. 8 inscriptions par heure pour tout le site). PROXY_IP_HEADERS=0 pour désactiver. */
+function clientIp(req) {
+  if (process.env.PROXY_IP_HEADERS !== '0') {
+    const cf = req.headers['cf-connecting-ip'];
+    if (typeof cf === 'string' && cf.trim()) return cf.trim().slice(0, 64);
+    const xff = req.headers['x-forwarded-for'];
+    if (typeof xff === 'string' && xff.trim()) return xff.split(',')[0].trim().slice(0, 64);
+  }
+  return req.ip || 'unknown';
+}
 const buckets = new Map();
 function rateLimit(name, max, windowMs, keyFn) {
   return (req, res, next) => {
-    const k = name + ':' + (keyFn ? keyFn(req) : req.ip);
+    const k = name + ':' + (keyFn ? keyFn(req) : clientIp(req));
     const now = Date.now();
     let b = buckets.get(k);
     if (!b || b.reset < now) { b = { n: 0, reset: now + windowMs }; buckets.set(k, b); }
@@ -68,4 +79,4 @@ async function sendMail(to, subject, text) {
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const csvCell = (v) => { let s = String(v == null ? '' : v); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return '"' + s.replace(/"/g, '""') + '"'; };
 
-module.exports = { HttpError, bad, hashPassword, verifyPassword, sha, token, norm, clean, cleanText, isEmail, normPhone, int, rateLimit, sendMail, esc, csvCell };
+module.exports = { clientIp, HttpError, bad, hashPassword, verifyPassword, sha, token, norm, clean, cleanText, isEmail, normPhone, int, rateLimit, sendMail, esc, csvCell };

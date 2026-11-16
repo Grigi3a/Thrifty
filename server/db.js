@@ -87,6 +87,27 @@ addCol('users', 'bio', "TEXT NOT NULL DEFAULT ''");
 addCol('users', 'email_verified', 'INTEGER NOT NULL DEFAULT 0');
 addCol('orders', 'group_id', 'INTEGER');
 addCol('orders', 'bundle_title', "TEXT NOT NULL DEFAULT ''");
+/* v7 : remise en main propre (code de remise montré à l'acheteur seul), vues des annonces. */
+addCol('orders', 'handover', "TEXT NOT NULL DEFAULT 'carrier'");
+addCol('orders', 'hand_code', "TEXT NOT NULL DEFAULT ''");
+addCol('orders', 'hand_tries', 'INTEGER NOT NULL DEFAULT 0');
+addCol('items', 'views', 'INTEGER NOT NULL DEFAULT 0');
+/* v8 : crédits vendeur (en DH entiers), options payantes (remontée, mise à la une). */
+addCol('users', 'credits', 'INTEGER NOT NULL DEFAULT 0');
+addCol('items', 'bumped_at', 'INTEGER NOT NULL DEFAULT 0');
+addCol('items', 'featured_until', 'INTEGER NOT NULL DEFAULT 0');
+db.exec(`
+CREATE TABLE IF NOT EXISTS credit_tx(
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), amount INTEGER NOT NULL, balance INTEGER NOT NULL,
+  kind TEXT NOT NULL, ref INTEGER, note TEXT NOT NULL DEFAULT '', admin_id INTEGER, ts INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_credit_tx_user ON credit_tx(user_id, ts DESC);
+CREATE TABLE IF NOT EXISTS topups(
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), amount INTEGER NOT NULL, method TEXT NOT NULL,
+  reference TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending', note TEXT NOT NULL DEFAULT '', ts INTEGER NOT NULL, decided_ts INTEGER, admin_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_topups_status ON topups(status, ts DESC);
+`);
 db.exec(`
 CREATE TABLE IF NOT EXISTS collections(
   id INTEGER PRIMARY KEY, slug TEXT NOT NULL UNIQUE, title TEXT NOT NULL, descr TEXT NOT NULL DEFAULT '', cover TEXT NOT NULL DEFAULT '',

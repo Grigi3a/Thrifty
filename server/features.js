@@ -155,7 +155,7 @@ function mount(c) {
     const bundles = all('SELECT * FROM bundles WHERE seller_id=? AND active=1', id).map((b) => bundleOut(b, false)).filter((b) => b.available);
     res.json({
       seller: { id: u.id, name: u.name, city: u.city, bio: u.bio || '', since: u.created, emailVerified: !!u.email_verified },
-      stats: { sales: st.sales, reviews: st.reviews, avg: st.avg, available: items.length },
+      stats: { sales: st.sales, reviews: st.reviews, avg: st.avg, available: items.length, respond: st.respond },
       handover: [{ id: 'carrier', label: 'Livraison par transporteur', fee: money(0).ship }],
       reviews, items, bundles
     });

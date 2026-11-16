@@ -33,7 +33,12 @@
     try { const r = await T.post('/auth/register', d); await T.afterLogin(r.user); T.toast(`${DJ.congrats} ! ${DJ.hello} sur Thrifty.`); T.go(T.next(), true); } catch (e) { T.fieldErr(f, e.message); }
   };
   T.route(/^\/mot-de-passe-oublie$/, () => authShell('Mot de passe oublié', 'Entrez votre e-mail, nous vous envoyons un lien pour en choisir un nouveau.', `<form class="stack" data-form="forgot" novalidate>${fld('email', 'E-mail', inp('email', 'email', 'required'))}<button class="btn btn-fill btn-block" type="submit">Envoyer le lien</button></form>`));
-  T.forms.forgot = async (f) => { await T.post('/auth/forgot', { email: T.formData(f).email }); f.outerHTML = '<p class="alert ok">Si ce compte existe, un e-mail vient de partir. Pensez à regarder vos spams.</p>'; };
+  T.forms.forgot = async (f) => {
+    await T.post('/auth/forgot', { email: T.formData(f).email });
+    f.outerHTML = T.cfg.mailEnabled
+      ? '<p class="alert ok">Si ce compte existe, un e-mail vient de partir. Pensez à regarder vos spams.</p>'
+      : '<p class="alert ok">Demande enregistrée. Écrivez-nous depuis <a class="link" href="/aide">la page d\'aide</a> avec l\'e-mail de votre compte : nous vous envoyons un lien pour choisir un nouveau mot de passe (par WhatsApp si votre numéro est sur votre compte).</p>';
+  };
   T.route(/^\/reinitialiser$/, (_, q) => authShell('Nouveau mot de passe', 'Choisissez un mot de passe d\'au moins 8 caractères.', `<form class="stack" data-form="reset" data-token="${esc(q.get('token') || '')}" novalidate>${fld('password', 'Nouveau mot de passe', inp('password', 'password', 'autocomplete="new-password" minlength="8" required'))}<button class="btn btn-fill btn-block" type="submit">Enregistrer</button></form>`));
   T.forms.reset = async (f) => { T.fieldErr(f, ''); try { await T.post('/auth/reset', { token: f.dataset.token, password: T.formData(f).password }); T.toast(DJ.done + ' ! Connectez-vous.'); T.go('/connexion'); } catch (e) { T.fieldErr(f, e.message); } };
 
@@ -65,6 +70,7 @@
     return `<div class="thread"><div class="thead"><a class="mini" href="/article/${it ? it.id : ''}">${thumb(it && it.photo)}<span><b>${esc(it ? it.title : 'Article supprimé')}</b><br><span class="small muted">avec ${esc(c.other.name)} · ${it ? dh(it.price) : ''}${c.agreed ? ' · convenu ' + dh(c.agreed) : ''}</span></span></a>
       <span class="row">${can ? `<button class="btn btn-sm btn-line" data-act="toffer" data-price="${it.price}">${esc(DJ.offer)}</button>` : ''}${can && isBuyer ? `<a class="btn btn-sm btn-fill" href="/paiement/${it.id}">Acheter${c.agreed ? ' à ' + dh(c.agreed) : ''}</a>` : ''}${it && it.status === 'sold' ? '<span class="pill">Vendu</span>' : ''}</span></div>
       <div class="tbody" id="tbody" aria-live="polite">${r.messages.map((m) => bubble(m, r.me)).join('') || `<p class="muted">${esc(DJ.hi)} ! Écrivez le premier message.</p>`}</div>
+      ${can ? '<p class="small muted" style="padding:6px 14px 0">🔒 Numéros, e-mails et liens WhatsApp sont masqués jusqu\'à la commande : payer via Thrifty, c\'est garder la protection acheteur et vendeur.</p>' : ''}
       <form class="tcomp" data-form="send"><input class="in" name="text" maxlength="1000" placeholder="Votre message…" aria-label="Votre message" autocomplete="off" required><button class="btn btn-fill" type="submit">Envoyer</button></form></div>`;
   }
   function wireThread(root, id, r0) {
@@ -78,7 +84,7 @@
     };
     T.threadRefresh = () => refresh(true);
     T.timers.push(setInterval(() => { if (!document.hidden) refresh().catch(() => {}); }, 8000));
-    T.forms.send = async (f) => { const t = T.formData(f).text.trim(); if (!t) return; await T.post(`/convos/${id}/messages`, { text: t }); f.reset(); await refresh(true); $('input[name=text]', root).focus(); };
+    T.forms.send = async (f) => { const t = T.formData(f).text.trim(); if (!t) return; const sr = await T.post(`/convos/${id}/messages`, { text: t }); if (sr && sr.masked) T.toast('Coordonnées masquées : elles s\'échangent après la commande, pour rester protégé.'); f.reset(); await refresh(true); $('input[name=text]', root).focus(); };
     T.acts.oaccept = async (el) => { if (await T.run(() => T.post(`/offers/${el.dataset.id}/accept`), DJ.congrats + ' ! Offre acceptée.')) refresh(true); };
     T.acts.orefuse = async (el) => { if (await T.run(() => T.post(`/offers/${el.dataset.id}/refuse`), 'Offre refusée.')) refresh(true); };
     T.acts.toffer = async (el) => {
@@ -93,23 +99,47 @@
     const d = await T.get('/items/' + id), it = d.item, u = T.user;
     if (it.status !== 'published' || it.seller.id === u.id) return `<div class="wrap sp">${T.emptyBox(it.seller.id === u.id ? 'C\'est votre annonce' : 'Article indisponible', it.seller.id === u.id ? 'Vous ne pouvez pas acheter votre propre article.' : 'Cet article vient d\'être vendu ou retiré.', '<a class="btn btn-fill" href="/catalogue">Continuer mes recherches</a>')}</div>`;
     const price = d.convo && d.convo.agreed ? Math.min(d.convo.agreed, it.price) : it.price, ship = T.cfg.ship, pm = T.cfg.paymentMethods;
+    const H = T.cfg.hand, handOk = !!(H && it.hand), startHand = handOk && SH.inHandZone(u.city);
     T.title('Paiement');
-    return `<div class="wrap sp"><h1 class="h2" style="margin-bottom:20px">Finaliser la commande</h1><div class="two"><form class="panel stack" data-form="order" data-item="${it.id}" novalidate><h2>Livraison</h2>
-      <div class="form-grid">${fld('name', 'Nom du destinataire', inp('name', 'text', `value="${esc(u.name)}" autocomplete="name" required`))}${fld('phone', 'Téléphone', inp('phone', 'tel', `value="${esc(u.phone || '')}" autocomplete="tel" inputmode="tel" required`), 'Le transporteur vous appellera.')}
-      <div class="full">${fld('address', 'Adresse complète', inp('address', 'text', 'autocomplete="street-address" required'), 'Rue, numéro, quartier, repère.')}</div>${fld('city', 'Ville', `<select class="in" id="city" name="city" required>${T.opts(SH.CITIES, u.city, 'Choisir…')}</select>`)}</div>
-      <h2 style="margin-top:8px">Paiement</h2><div class="stack">${pm.map((p, i) => `<label class="rc"><input type="radio" name="paymentMethod" value="${esc(p.id)}"${i === 0 ? ' checked' : ''}><span><b>${esc(p.label)}</b><br><span class="small muted">Vous payez au livreur à la réception. Vérifiez le colis avant de confirmer.</span></span></label>`).join('')}</div>
-      <button class="btn btn-fill btn-block" type="submit">Confirmer la commande · ${dh(price + ship)}</button></form>
+    const html = `<div class="wrap sp"><h1 class="h2" style="margin-bottom:20px">Finaliser la commande</h1><div class="two"><form class="panel stack" data-form="order" data-item="${it.id}" novalidate>
+      ${handOk ? `<h2>Mode de remise</h2><div class="stack"><label class="rc"><input type="radio" name="handover" value="carrier"${startHand ? '' : ' checked'}><span><b>Livraison à domicile · ${dh(ship)}</b><br><span class="small muted">Par transporteur, paiement au livreur.</span></span></label>
+        <label class="rc"><input type="radio" name="handover" value="hand"${startHand ? ' checked' : ''}><span><b>Remise en main propre · 0 DH</b><br><span class="small muted">À ${esc(H.label)}, dans un lieu public. Vous payez le vendeur en espèces après avoir vérifié l'article.</span></span></label></div>` : '<input type="hidden" name="handover" value="carrier">'}
+      <h2 id="h-deliv">Livraison</h2>
+      <div class="form-grid">${fld('name', 'Votre nom', inp('name', 'text', `value="${esc(u.name)}" autocomplete="name" required`))}${fld('phone', 'Téléphone', inp('phone', 'tel', `value="${esc(u.phone || '')}" autocomplete="tel" inputmode="tel" required`), '<span id="ph-hint">Le transporteur vous appellera.</span>')}
+      <div class="full" id="f-addr">${fld('address', 'Adresse complète', inp('address', 'text', 'autocomplete="street-address" required'), 'Rue, numéro, quartier, repère.')}</div>
+      ${handOk ? `<div class="full" id="f-spot" hidden>${fld('spot', 'Lieu de rendez-vous proposé', `<select class="in" id="spot" name="spot">${T.opts(H.spots)}</select>`, 'Toujours un lieu public et fréquenté. Vous confirmerez le jour et l\'heure avec le vendeur dans la messagerie.')}${fld('meetnote', 'Précision (facultatif)', inp('meetnote', 'text', 'maxlength="120" placeholder="Ex. en semaine après 18 h"'))}</div>` : ''}
+      ${fld('city', 'Ville', `<select class="in" id="city" name="city" required>${T.opts(SH.CITIES, u.city, 'Choisir…')}</select>`)}</div>
+      <div id="f-pay"><h2 style="margin-top:8px">Paiement</h2><div class="stack">${pm.map((p, i) => `<label class="rc"><input type="radio" name="paymentMethod" value="${esc(p.id)}"${i === 0 ? ' checked' : ''}><span><b>${esc(p.label)}</b><br><span class="small muted">Vous payez au livreur à la réception. Vérifiez le colis avant de confirmer.</span></span></label>`).join('')}</div></div>
+      ${handOk ? '<div id="f-handinfo" class="note-box" hidden><span>🤝</span><span>Après la commande, vous recevez un <b>code de remise à 6 chiffres</b>. Au rendez-vous : vérifiez l\'article, payez le vendeur, puis donnez-lui le code. Ne le donnez jamais avant d\'avoir vu l\'article.</span></div>' : ''}
+      <button class="btn btn-fill btn-block" type="submit" id="ordbtn">Confirmer la commande · ${dh(price + ship)}</button></form>
       <aside class="panel"><div class="mini">${thumb(it.photos[0]).replace('width:44px;height:56px', 'width:72px;height:90px')}<span><b>${esc(it.title)}</b><br><span class="small muted">${esc(it.brand)} · ${esc(it.size)}</span></span></div>
-      <dl class="lines"><div><dt>Article${d.convo && d.convo.agreed ? ' (prix convenu)' : ''}</dt><dd>${dh(price)}</dd></div><div><dt>Livraison</dt><dd>${dh(ship)}</dd></div><div class="big"><dt>Total à payer</dt><dd>${dh(price + ship)}</dd></div></dl>
-      <p class="small muted" style="margin-top:14px">Le vendeur n'est payé qu'après votre confirmation de réception.</p></aside></div></div>`;
+      <dl class="lines"><div><dt>Article${d.convo && d.convo.agreed ? ' (prix convenu)' : ''}</dt><dd>${dh(price)}</dd></div><div><dt>Livraison</dt><dd id="l-ship">${dh(ship)}</dd></div><div class="big"><dt>Total à payer</dt><dd id="l-tot">${dh(price + ship)}</dd></div></dl>
+      <p class="small muted" style="margin-top:14px" id="l-note">Le vendeur n'est payé qu'après votre confirmation de réception.</p></aside></div></div>`;
+    return [html, (root) => {
+      if (!handOk) return;
+      const f = $('form[data-form=order]', root);
+      const sync = () => {
+        const hand = (f.querySelector('input[name=handover]:checked') || {}).value === 'hand', s = hand ? 0 : ship;
+        $('#f-addr', root).hidden = hand; $('#f-spot', root).hidden = !hand; $('#f-pay', root).hidden = hand; $('#f-handinfo', root).hidden = !hand;
+        $('#h-deliv', root).textContent = hand ? 'Rendez-vous' : 'Livraison';
+        $('#ph-hint', root).textContent = hand ? 'Transmis au vendeur pour fixer le rendez-vous.' : 'Le transporteur vous appellera.';
+        $('#l-ship', root).textContent = hand ? '0 DH (main propre)' : dh(s); $('#l-tot', root).textContent = dh(price + s);
+        $('#l-note', root).textContent = hand ? 'Paiement en espèces au vendeur, au rendez-vous, après vérification. La vente n\'est conclue qu\'avec votre code.' : 'Le vendeur n\'est payé qu\'après votre confirmation de réception.';
+        $('#ordbtn', root).textContent = `Confirmer la commande · ${dh(price + s)}`;
+      };
+      f.addEventListener('change', (e) => { if (e.target.name === 'handover') sync(); });
+      sync();
+    }];
   }, { auth: true });
   T.forms.order = async (f) => {
-    T.fieldErr(f, ''); const d = T.formData(f);
-    try { const r = await T.post('/orders', { itemId: Number(f.dataset.item), name: d.name, phone: d.phone, address: d.address, city: d.city, paymentMethod: d.paymentMethod }); T.toast(`${DJ.congrats} ! Commande confirmée.`); T.go('/commande/' + r.id); } catch (e) { T.fieldErr(f, e.message); }
+    T.fieldErr(f, ''); const d = T.formData(f), hand = d.handover === 'hand';
+    const body = { itemId: Number(f.dataset.item), name: d.name, phone: d.phone, city: d.city, handover: hand ? 'hand' : 'carrier' };
+    if (hand) { body.spot = d.spot; body.address = d.meetnote || ''; } else { body.address = d.address; body.paymentMethod = d.paymentMethod; }
+    try { const r = await T.post('/orders', body); T.toast(`${DJ.congrats} ! Commande confirmée.`); T.go('/commande/' + r.id); } catch (e) { T.fieldErr(f, e.message); }
   };
 
   /* ---------- Commandes ---------- */
-  const ocard = (o, role) => `<a class="ocard" href="/commande/${o.id}"><span class="th">${o.photo ? `<img src="${esc(o.photo)}" alt="">` : ''}</span><span class="grow"><b>${esc(o.title)}</b><br><span class="small muted">${esc(o.code)} · ${esc(role === 'seller' ? 'acheteur ' + o.buyer.name : 'vendeur ' + o.seller.name)} · ${T.ago(o.created)}</span><br>${T.pill(o.status)}</span><span class="end"><b>${dh(role === 'seller' ? o.net : o.total)}</b>${role === 'seller' ? T.payPill(o.payout) : ''}</span></a>`;
+  const ocard = (o, role) => `<a class="ocard" href="/commande/${o.id}"><span class="th">${o.photo ? `<img src="${esc(o.photo)}" alt="">` : ''}</span><span class="grow"><b>${esc(o.title)}</b><br><span class="small muted">${esc(o.code)} · ${esc(role === 'seller' ? 'acheteur ' + o.buyer.name : 'vendeur ' + o.seller.name)} · ${T.ago(o.created)}</span><br>${T.pillO(o)}</span><span class="end"><b>${dh(role === 'seller' ? o.net : o.total)}</b>${role === 'seller' ? T.payPill(o.payout) : ''}</span></a>`;
   T.route(/^\/achats$/, async () => {
     const { orders } = await T.get('/orders?role=buyer'); T.title('Mes achats');
     return `<div class="wrap sp"><h1 class="h2" style="margin-bottom:20px">Mes achats</h1>${orders.length ? `<div class="olist">${orders.map((o) => ocard(o, 'buyer')).join('')}</div>` : T.emptyBox(DJ.empty, 'Vous n\'avez pas encore commandé.', '<a class="btn btn-fill" href="/catalogue">Découvrir les pièces</a>')}</div>`;
@@ -129,20 +159,27 @@
 
   T.route(/^\/commande\/(\d+)$/, async ([id]) => {
     const { order: o } = await T.get('/orders/' + id), u = T.user, buyer = u.id === o.buyer.id, seller = u.id === o.seller.id; T.title('Commande ' + o.code);
-    const steps = ['Commandée', 'Expédiée', 'Livrée', 'Confirmée'], idx = { to_ship: 0, shipping: 1, delivered: 2, confirmed: 3 }[o.status];
+    const hand = o.handover === 'hand';
+    const steps = hand ? ['Commandée', 'Rendez-vous', 'Remise confirmée'] : ['Commandée', 'Expédiée', 'Livrée', 'Confirmée'], idx = (hand ? { to_ship: 1, confirmed: 2 } : { to_ship: 0, shipping: 1, delivered: 2, confirmed: 3 })[o.status];
     const btns = [];
-    if (seller && o.status === 'to_ship') btns.push('<button class="btn btn-fill" data-act="oship">Marquer comme expédiée</button>');
+    if (seller && o.status === 'to_ship' && !hand) btns.push('<button class="btn btn-fill" data-act="oship">Marquer comme expédiée</button>');
+    if (seller && o.status === 'to_ship' && hand) btns.push(`<button class="btn btn-fill" data-act="ohand"${o.handTriesLeft === 0 ? ' disabled' : ''}>Saisir le code de l'acheteur</button>`);
     if ((seller || buyer) && o.status === 'to_ship') btns.push('<button class="btn btn-danger" data-act="ocancel">Annuler la commande</button>');
     if (buyer && o.status === 'delivered') btns.push('<button class="btn btn-fill" data-act="oconfirm">Tout est conforme, confirmer la réception</button>');
     if (buyer && ['to_ship', 'shipping', 'delivered'].includes(o.status)) btns.push('<button class="btn btn-line" data-act="oissue">Signaler un problème</button>');
     return `<div class="wrap sp"><nav class="crumbs"><a href="/${buyer ? 'achats' : 'ventes'}">${buyer ? 'Mes achats' : 'Mes ventes'}</a><span>/</span><span>${esc(o.code)}</span></nav>
-      <div class="between"><h1 class="h2">Commande ${esc(o.code)}</h1>${T.pill(o.status)}</div>
+      <div class="between"><h1 class="h2">Commande ${esc(o.code)}</h1>${T.pillO(o)}</div>
       ${idx !== undefined ? `<div class="stepper2">${steps.map((s, i) => `<div class="stp${i <= idx ? ' on' : ''}"><i></i>${s}</div>`).join('')}</div>` : o.status === 'issue' ? `<p class="alert bad" style="margin:16px 0">Problème signalé : ${esc(o.issue ? o.issue.reason : '')}. Notre équipe étudie le dossier.</p>` : `<p class="alert warn" style="margin:16px 0">${esc(SH.ORDER_LBL[o.status])}.</p>`}
       ${o.status === 'delivered' && buyer ? '<p class="alert info" style="margin-bottom:16px">Votre colis est livré ? Vérifiez-le, puis confirmez. Le vendeur sera payé après votre confirmation.</p>' : ''}
+      ${hand && o.status === 'to_ship' ? `<div class="panel" style="margin-bottom:16px"><h3>🤝 Remise en main propre</h3>
+        ${buyer ? `<p class="small" style="margin-top:6px">Votre code de remise :</p><div class="hand-code" aria-label="Code de remise">${esc(o.handCode || '')}</div><p class="small"><b>Ne donnez ce code qu'après avoir vérifié l'article et payé.</b> Une fois saisi par le vendeur, la vente est conclue. Un souci avant ? « Signaler un problème » ci-dessous.</p>${o.sellerPhone ? `<p class="small" style="margin-top:8px">Téléphone du vendeur : <a class="link" href="tel:${esc(o.sellerPhone)}" data-native="1">${esc(o.sellerPhone)}</a></p>` : ''}`
+        : seller ? `<p class="small" style="margin-top:6px">Contactez l'acheteur pour fixer le jour et l'heure. Au rendez-vous : laissez-le vérifier l'article, encaissez <b>${dh(o.price)}</b> en espèces, puis demandez-lui son <b>code à 6 chiffres</b> et saisissez-le ici. Sans ce code, la vente n'est pas conclue.</p>${o.handTriesLeft < 5 ? `<p class="small muted">Essais restants : ${o.handTriesLeft}</p>` : ''}` : ''}
+        <p class="small muted" style="margin-top:8px">Conseils : lieu public et fréquenté, en journée, venez accompagné si possible. Ne payez jamais à l'avance.</p></div>` : ''}
       <div class="two eq"><div class="panel"><div class="mini"><span class="th">${o.photo ? `<img src="${esc(o.photo)}" alt="">` : ''}</span><span><a class="link" href="/article/${o.itemId || ''}"><b>${esc(o.title)}</b></a><br><span class="small muted">${esc(o.brand)} · ${esc(o.size)}</span><br><span class="small muted">${buyer ? 'Vendeur : ' + esc(o.seller.name) : 'Acheteur : ' + esc(o.buyer.name)}</span></span></div>
-      <dl class="lines"><div><dt>Prix de l'article</dt><dd>${dh(o.price)}</dd></div>${seller ? `<div><dt>Commission (${Math.round(o.rate * 1000) / 10} %)</dt><dd>− ${dh(o.commission)}</dd></div><div class="big"><dt>Vous recevez</dt><dd>${dh(o.net)}</dd></div><div><dt>Versement</dt><dd>${T.payPill(o.payout)}</dd></div>` : `<div><dt>Livraison</dt><dd>${dh(o.ship)}</dd></div><div class="big"><dt>Total à payer</dt><dd>${dh(o.total)}</dd></div><div><dt>Paiement</dt><dd>À la livraison</dd></div>`}</dl></div>
-      <div class="panel"><h3>Livraison</h3>${o.bundleTitle ? `<p class="small" style="margin-top:6px"><b>Lot « ${esc(o.bundleTitle)} »</b> : un seul colis, ${1 + (o.siblings || []).length} pièces${(o.siblings || []).length ? ' (aussi : ' + o.siblings.map((x) => esc(x.title)).join(', ') + ')' : ''}.</p>` : ''}<p style="margin-top:8px">${esc(o.shipName || '')}<br>${esc(o.address || '')}<br>${esc(o.city)}<br>${esc(o.phone || '')}</p><p class="small muted" style="margin-top:8px">Colis ${esc(o.pack)}${o.tracking ? ' · n° de suivi indiqué par le vendeur (non vérifié) : ' + esc(o.tracking) : ''}</p>
-      ${seller && o.status === 'to_ship' ? '<p class="alert warn small" style="margin-top:12px">Préparez le colis et remettez-le au transporteur. Puis indiquez-le ci-dessous : l\'étape « expédiée » est déclarée par vous, Thrifty n\'a pas de suivi automatique du transporteur.</p>' : ''}</div></div>
+      <dl class="lines"><div><dt>Prix de l'article</dt><dd>${dh(o.price)}</dd></div>${seller && hand ? `<div class="big"><dt>Vous encaissez en espèces</dt><dd>${dh(o.price)}</dd></div><div><dt>Frais main propre</dt><dd>${o.commission > 0 ? `${dh(o.commission)} <span class="small muted">(prélevés sur <a class="link" href="/credits">vos crédits</a>)</span>` : 'Gratuit'}</dd></div>`
+        : seller ? `<div><dt>Commission (${Math.round(o.rate * 1000) / 10} %)</dt><dd>− ${dh(o.commission)}</dd></div><div class="big"><dt>Vous recevez</dt><dd>${dh(o.net)}</dd></div><div><dt>Versement</dt><dd>${T.payPill(o.payout)}</dd></div>` : `<div><dt>Livraison</dt><dd>${hand ? '0 DH (main propre)' : dh(o.ship)}</dd></div><div class="big"><dt>Total à payer</dt><dd>${dh(o.total)}</dd></div><div><dt>Paiement</dt><dd>${hand ? 'En espèces au vendeur, au rendez-vous' : 'À la livraison'}</dd></div>`}</dl></div>
+      <div class="panel"><h3>${hand ? 'Rendez-vous' : 'Livraison'}</h3>${o.bundleTitle ? `<p class="small" style="margin-top:6px"><b>Lot « ${esc(o.bundleTitle)} »</b> : un seul colis, ${1 + (o.siblings || []).length} pièces${(o.siblings || []).length ? ' (aussi : ' + o.siblings.map((x) => esc(x.title)).join(', ') + ')' : ''}.</p>` : ''}<p style="margin-top:8px">${esc(o.shipName || '')}<br>${esc(o.address || '')}<br>${esc(o.city)}<br>${esc(o.phone || '')}</p>${hand ? '' : `<p class="small muted" style="margin-top:8px">Colis ${esc(o.pack)}${o.tracking ? ' · n° de suivi indiqué par le vendeur (non vérifié) : ' + esc(o.tracking) : ''}</p>`}
+      ${seller && o.status === 'to_ship' && !hand ? '<p class="alert warn small" style="margin-top:12px">Préparez le colis et remettez-le au transporteur. Puis indiquez-le ci-dessous : l\'étape « expédiée » est déclarée par vous, Thrifty n\'a pas de suivi automatique du transporteur.</p>' : ''}</div></div>
       ${btns.length ? `<div class="row" style="margin-top:20px">${btns.join('')}</div>` : ''}
       ${buyer && o.status === 'confirmed' && !o.review ? `<form class="panel stack" style="margin-top:20px" data-form="review" data-id="${o.id}"><h3>${esc(DJ.thanks)} ! Laissez un avis</h3><div class="row" role="radiogroup" aria-label="Note">${[1, 2, 3, 4, 5].map((n) => `<label class="chip-f" style="cursor:pointer"><input type="radio" name="rating" value="${n}" ${n === 5 ? 'checked' : ''} style="accent-color:var(--cobalt)"> ${n} ★</label>`).join('')}</div><textarea class="in" name="text" maxlength="500" placeholder="Article conforme ? Vendeur sérieux ?"></textarea><button class="btn btn-fill" type="submit">Publier l'avis</button></form>` : ''}
       ${o.review ? `<div class="panel" style="margin-top:20px"><b>Avis</b> ${T.stars(o.review.rating)}<p>${esc(o.review.text)}</p></div>` : ''}
@@ -152,6 +189,10 @@
   T.acts.oship = async () => {
     const r = await T.modal(`<h3>Expédition</h3><form class="stack"><div class="field"><label for="tr">Numéro de suivi (facultatif)</label><input class="in" id="tr" name="tracking" maxlength="60"></div><div class="row"><button class="btn btn-fill" type="submit">Colis expédié</button><button class="btn btn-line" type="button" data-close="no">Annuler</button></div></form>`);
     if (r && (await T.run(() => T.post(`/orders/${oid()}/ship`, { tracking: r.tracking }), DJ.done + ' ! Colis marqué expédié.'))) T.render();
+  };
+  T.acts.ohand = async () => {
+    const r = await T.modal('<h3>Code de remise</h3><p class="muted">Demandez à l\'acheteur son code à 6 chiffres, une fois qu\'il a vérifié l\'article et vous a payé.</p><form class="stack"><div class="field"><label for="hc">Code de l\'acheteur</label><input class="in" id="hc" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" maxlength="7" required style="font-size:28px;letter-spacing:.3em;text-align:center"></div><div class="row"><button class="btn btn-fill" type="submit">Valider la remise</button><button class="btn btn-line" type="button" data-close="no">Annuler</button></div></form>');
+    if (r && (await T.run(() => T.post(`/orders/${oid()}/handover`, { code: r.code }), DJ.congrats + ' ! Vente conclue.'))) T.render();
   };
   T.acts.ocancel = async () => { if (await T.confirm('Annuler la commande ?', 'L\'article sera remis en vente.', 'Annuler la commande', true) && (await T.run(() => T.post(`/orders/${oid()}/cancel`), 'Commande annulée.'))) T.render(); };
   T.acts.oconfirm = async () => { if (await T.confirm('Confirmer la réception ?', 'Vous confirmez avoir reçu l\'article conforme à l\'annonce. Le vendeur sera payé.', 'Je confirme') && (await T.run(() => T.post(`/orders/${oid()}/confirm`), DJ.congrats + ' !'))) T.render(); };
@@ -196,7 +237,7 @@
         <div class="form-grid" id="meas"></div><div id="mhelp"></div></div>
       <div class="panel stack"><h2>Prix</h2>${fld('price', 'Prix (DH)', inp('price', 'number', `min="1" max="100000" step="1" inputmode="numeric" value="${v.price || ''}"`))}<p class="alert info small" id="net"></p>
         <label class="ck"><input type="checkbox" name="decl" id="decl"${it && it.status === 'published' ? ' checked' : ''}> <span class="small">Je certifie que l'article est conforme aux photos et à la description, et que je suis autorisé(e) à le vendre.</span></label></div></div>
-      <aside class="panel stack" style="position:sticky;top:150px"><h2>Publier</h2><p class="small muted">Commission de ${T.pct(T.cfg.rate)} retenue uniquement quand l'article est vendu${T.cfg.launch ? ' (offre de lancement en cours)' : ''}. La livraison (${dh(T.cfg.ship)}) est payée par l'acheteur.</p>
+      <aside class="panel stack" style="position:sticky;top:150px"><h2>Publier</h2><p class="small muted">Commission de ${T.pct(T.cfg.rate)} retenue uniquement quand l'article est vendu${T.cfg.launch ? ' (offre de lancement en cours)' : ''}. La livraison (${dh(T.cfg.ship)}) est payée par l'acheteur.${T.cfg.hand && T.cfg.hand.rate > 0 ? ` Main propre (${esc(T.cfg.hand.label)}) : l'acheteur vous paie en espèces, et des frais de ${T.pct(T.cfg.hand.rate)} (minimum ${dh(T.cfg.hand.min)}) sont prélevés sur <a class="link" href="/credits">vos crédits</a>.` : ''}</p>
         <button class="btn btn-fill btn-block" type="submit" data-publish="1">${it && it.status === 'published' ? 'Enregistrer' : 'Publier l\'annonce'}</button>${!it || it.status === 'draft' ? '<button class="btn btn-line btn-block" type="submit" data-publish="0">Enregistrer le brouillon</button>' : ''}</aside></form></div>`;
     return [html, (root) => {
       const $f = (n) => $('#' + n, root), selU = $f('univ'), selC = $f('cat'), selS = $f('size');
@@ -235,11 +276,12 @@
 
   /* ---------- Dressing ---------- */
   T.route(/^\/dressing$/, async () => {
-    const { items } = await T.get('/my/items'); T.title('Mon dressing'); const paused = items.some((i) => i.paused);
+    const [{ items }, cr] = await Promise.all([T.get('/my/items'), T.get('/credits').catch(() => null)]); T.title('Mon dressing'); const paused = items.some((i) => i.paused);
     const L = { published: ['En ligne', 'ok'], draft: ['Brouillon', ''], hidden: ['Masqué', 'warn'], sold: ['Vendu', 'blue'] };
-    const rows = items.map((i) => `<div class="ocard"><a class="th" href="/article/${i.id}">${i.photos[0] ? `<img src="${esc(i.photos[0])}" alt="">` : ''}</a><span class="grow"><a href="/article/${i.id}"><b>${esc(i.title)}</b></a><br><span class="small muted">${dh(i.price)} · ${esc(i.size || '—')}</span><br><span class="pill ${L[i.status][1]}">${L[i.status][0]}</span></span>
-      <span class="end">${i.status === 'sold' ? (i.orderId ? `<a class="btn btn-sm btn-line" href="/commande/${i.orderId}">Commande</a>` : '') : `<span class="row" style="justify-content:flex-end"><a class="btn btn-sm btn-line" href="/vendre/${i.id}">Modifier</a>${i.status === 'published' ? `<button class="btn btn-sm btn-line" data-act="ihide" data-id="${i.id}">Masquer</button>` : i.status === 'hidden' ? `<button class="btn btn-sm btn-line" data-act="ishow" data-id="${i.id}">Remettre en ligne</button>` : ''}<button class="btn btn-sm btn-danger" data-act="idel" data-id="${i.id}">Supprimer</button></span>`}</span></div>`).join('');
+    const rows = items.map((i) => `<div class="ocard"><a class="th" href="/article/${i.id}">${i.photos[0] ? `<img src="${esc(i.photos[0])}" alt="">` : ''}</a><span class="grow"><a href="/article/${i.id}"><b>${esc(i.title)}</b></a><br><span class="small muted">${dh(i.price)} · ${esc(i.size || '—')}${i.status === 'published' ? ` · 👁 ${i.views || 0}` : ''}</span><br><span class="pill ${L[i.status][1]}">${L[i.status][0]}</span>${T.optionInfo ? T.optionInfo(i) : ''}</span>
+      <span class="end">${i.status === 'sold' ? (i.orderId ? `<a class="btn btn-sm btn-line" href="/commande/${i.orderId}">Commande</a>` : '') : `<span class="row" style="justify-content:flex-end">${T.optionBtns ? T.optionBtns(i) : ''}<a class="btn btn-sm btn-line" href="/vendre/${i.id}">Modifier</a>${i.status === 'published' ? `<button class="btn btn-sm btn-line" data-act="ihide" data-id="${i.id}">Masquer</button>` : i.status === 'hidden' ? `<button class="btn btn-sm btn-line" data-act="ishow" data-id="${i.id}">Remettre en ligne</button>` : ''}<button class="btn btn-sm btn-danger" data-act="idel" data-id="${i.id}">Supprimer</button></span>`}</span></div>`).join('');
     return `<div class="wrap sp"><div class="between" style="margin-bottom:20px"><h1 class="h2">Mon dressing</h1><span class="row"><button class="btn btn-line" data-act="${paused ? 'iresume' : 'ipause'}">${paused ? 'Reprendre les ventes' : 'Mode vacances'}</button><a class="btn btn-fill" href="/vendre">${esc(DJ.sell)}</a></span></div>
+      ${cr ? `<a class="credit-bar${cr.balance < 0 ? ' neg' : ''}" href="/credits"><span>Mes crédits : <b>${dh(cr.balance)}</b>${cr.balance < 0 ? ' · à régulariser' : ''}</span><span class="small">Remonter une annonce ${dh(cr.prices.bump)} · À la une ${dh(cr.prices.feature)} · Recharger →</span></a>` : ''}
       ${paused ? '<p class="alert warn" style="margin-bottom:16px">Mode vacances : vos annonces sont masquées.</p>' : ''}${items.length ? `<div class="olist">${rows}</div>` : T.emptyBox(DJ.empty, 'Votre dressing est vide. Mettez en ligne votre première pièce.', `<a class="btn btn-fill" href="/vendre">${esc(DJ.sell)}</a>`)}</div>`;
   }, { auth: true });
   const act = (path, msg) => async (el) => { if (await T.run(() => T.post(path(el), {}), msg)) T.render(); };

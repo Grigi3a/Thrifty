@@ -24,8 +24,23 @@
   }
   const packFor = (c) => ({ Manteaux: 'Grand', Chaussures: 'Grand', 'Tee-shirts': 'Petit', Accessoires: 'Petit' }[c] || 'Moyen');
   const ORDER_LBL = { to_ship: 'À expédier', shipping: 'Expédiée (déclarée par le vendeur)', delivered: 'Livraison enregistrée · à vérifier', confirmed: 'Réception confirmée', issue: 'Problème signalé', refunded: 'Remboursée', cancelled: 'Annulée' };
-  const PAY_LBL = { pending: 'En attente', due: 'À verser', paid: 'Versé', suspended: 'Suspendu', cancelled: 'Annulé' };
+  const PAY_LBL = { pending: 'En attente', due: 'À verser', paid: 'Versé', suspended: 'Suspendu', cancelled: 'Annulé', none: 'Payé en main propre', owed: 'Commission à régler', collected: 'Commission réglée' };
   const ZONES = { rabat: { label: 'Rabat · Salé · Témara', cities: ['Rabat', 'Salé', 'Témara'] } };
+  /* Remise en main propre : seulement si l'article ET l'acheteur sont dans la zone. */
+  const HAND_ZONE = 'rabat';
+  const inHandZone = (city) => ZONES[HAND_ZONE].cities.includes(city);
+  const MEET_SPOTS = ['Gare Rabat-Ville', 'Gare Rabat-Agdal', 'Arribat Center', 'Mega Mall', 'Marina de Salé', 'Gare Salé-Ville', 'Témara Plaza', 'Autre lieu public (à convenir)'];
+  /* Coordonnées masquées dans la messagerie tant qu'aucune commande n'existe : évite les ventes hors plateforme, donc hors protection. */
+  function maskContacts(text) {
+    let t = String(text || '').replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)));
+    let hit = false;
+    const rep = (re) => { t = t.replace(re, () => { hit = true; return '[coordonnée masquée]'; }); };
+    rep(/\b(?:https?:\/\/)?(?:wa\.me|api\.whatsapp\.com|chat\.whatsapp\.com|t\.me|m\.me)\/\S*/gi);
+    rep(/[\w.+-]+@[\w-]+\.[\w.-]{2,}/g);
+    rep(/(?:\+|00)?\d(?:[\s.\-()]{0,3}\d){8,}/g); // 9 chiffres ou plus : un numéro marocain, pas un prix ni une date
+    return { text: t, masked: hit };
+  }
+  const slugify = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60).replace(/-+$/, '');
   const FITS = { petit: 'Taille petit', normal: 'Taille normalement', grand: 'Taille grand' };
   const MEAS = {
     haut: [
@@ -55,5 +70,5 @@
   const measuresFor = (cat) => MEAS[MEAS_GROUP[cat]] || [];
   const measureGroup = (cat) => MEAS_GROUP[cat] || '';
   const FLAT_NOTE = "Les mesures sont prises vêtement posé à plat, de bord à bord, et saisies par le vendeur. Elles ne sont pas des tours : pour un vêtement non extensible, le tour est environ 2 fois la largeur à plat.";
-  return { ZONES, FITS, MEAS, measuresFor, measureGroup, FLAT_NOTE, UNIV, CATS, catsFor, COND, COLORS, CITIES, PACKS, REASONS, sizesFor, allSizes, packFor, ORDER_LBL, PAY_LBL };
+  return { HAND_ZONE, inHandZone, MEET_SPOTS, maskContacts, slugify, ZONES, FITS, MEAS, measuresFor, measureGroup, FLAT_NOTE, UNIV, CATS, catsFor, COND, COLORS, CITIES, PACKS, REASONS, sizesFor, allSizes, packFor, ORDER_LBL, PAY_LBL };
 });
